@@ -40,8 +40,12 @@ export function formatCollection(result: CollectionResult): string {
 }
 
 function formatLine(line: LineView): string {
-  const state =
-    line.failed > 0 && line.active ? `${line.state}, ${String(line.failed)} failed` : line.state;
+  // `state` includes runs still active on older commits; say so when the newest commit differs.
+  const details = [
+    line.commitState === line.state ? null : `latest commit ${line.commitState}`,
+    line.failed > 0 && line.commitState !== 'failure' ? `${String(line.failed)} failed` : null,
+  ].filter((detail) => detail !== null);
+  const state = [line.state, ...details].join(', ');
   const ref = line.pullRequest
     ? `${line.label} ${line.pullRequest.title}${line.pullRequest.draft ? ' (draft)' : ''} by ${line.pullRequest.author ?? 'unknown'}`
     : line.label;

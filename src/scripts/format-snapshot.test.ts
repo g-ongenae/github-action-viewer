@@ -25,6 +25,25 @@ describe('formatCollection', () => {
             ],
             pullRequests: [pullRequest({ draft: true })],
           }),
+          repository({
+            fullName: 'octo-org/gadgets',
+            runs: [
+              run({
+                id: 3,
+                headRepository: 'octo-org/gadgets',
+                headSha: 'sha-old',
+                status: 'in_progress',
+                conclusion: null,
+              }),
+              run({
+                id: 4,
+                headRepository: 'octo-org/gadgets',
+                headSha: 'sha-new',
+                conclusion: 'failure',
+                createdAt: '2026-11-13T11:00:00Z',
+              }),
+            ],
+          }),
         ],
         problems: [
           {
@@ -53,6 +72,9 @@ describe('formatCollection', () => {
       [
         'GitHub Actions of octocat — 2026-11-13 12:00Z',
         '! octo-org/gone: Not found.',
+        '',
+        'octo-org/gadgets  (own)',
+        '  [in_progress, latest commit failure] main  2026-11-13 11:00Z  Commit title - Mona Lisa',
         '',
         'octo-org/widgets  (own)',
         '  [success] main  2026-11-13 10:00Z  Commit title - Mona Lisa',
