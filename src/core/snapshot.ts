@@ -48,17 +48,26 @@ export interface LineView {
   readonly label: string;
   /** The pull request, for `pull_request` lines; null otherwise. */
   readonly pullRequest: PullRequestView | null;
-  /** Combined state of the current runs (see `RUN_STATE_PRECEDENCE`). */
+  /**
+   * What the line's badge shows: the combined state of all its runs, superseded ones included
+   * (see `RUN_STATE_PRECEDENCE`). It reads active whenever anything on the ref still runs.
+   */
   readonly state: RunState;
-  /** Number of current runs in each state; every state is present, zero included. */
+  /**
+   * Verdict on the newest commit: the combined state of the current runs only. Differs from
+   * `state` while a run of an older commit is still active, e.g. "running (older commit), latest
+   * commit failed".
+   */
+  readonly commitState: RunState;
+  /** Number of current runs (newest commit) in each state; every state is present, zero included. */
   readonly counts: Readonly<Record<RunState, number>>;
-  /** Number of current runs that failed or timed out. */
+  /** Number of current runs (newest commit) that failed or timed out. */
   readonly failed: number;
   /** Whether any run of the line is active, superseded ones included. */
   readonly active: boolean;
   /** Line date: when the newest current run was created. Stable while runs progress. */
   readonly date: string;
-  /** Latest `updatedAt` among the current runs. */
+  /** Latest `updatedAt` among the current runs (newest commit). */
   readonly updatedAt: string;
   /** The newest commit of the ref, which the current runs ran on. */
   readonly commit: CommitView;

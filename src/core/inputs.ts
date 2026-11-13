@@ -27,7 +27,10 @@ export interface WorkflowRunInput {
   readonly status: string | null;
   /** `conclusion`, kept raw (see `normaliseRunState`). */
   readonly conclusion: string | null;
-  /** `head_branch`: branch (or tag) name; null for a few events. */
+  /**
+   * `head_branch`: branch or tag name, null for a few events. GitHub does not say which of the
+   * two it is, so the core treats it as a branch name (see `buildRepositoryView`).
+   */
   readonly headBranch: string | null;
   /** `head_sha`. */
   readonly headSha: string;

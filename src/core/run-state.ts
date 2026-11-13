@@ -36,7 +36,9 @@ export type RunState =
  * takes the state of its highest-precedence run.
  *
  * - Active states come first: the page is about what is running *now*, so a line with anything
- *   still running reads as running (failures stay visible through {@link RunSummary.failed}).
+ *   still running — including a run of an older commit of the ref — reads as running. The
+ *   newest commit's own outcome stays visible next to it (the line's `commitState`, `counts`
+ *   and `failed`).
  * - Then the finished states that need attention, worst first: failure, time-out, approval
  *   needed, cancellation.
  * - `unknown` sits above the good outcomes: an unrecognised value is not claimed to be green.
