@@ -2,7 +2,7 @@
   // Options shared by every TypeScript project in the repository.
   // Environment-specific settings (lib, types, include) live in the extending configs.
   "compilerOptions": {
-    "target": "es2024",
+    "target": "es2025",
     "module": "nodenext",
     "moduleResolution": "nodenext",
 

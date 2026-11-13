@@ -1,0 +1,5 @@
+# pnpm settings (pnpm 12 reads them from here, not from .npmrc).
+
+# Fail `pnpm install` on a Node.js version outside package.json#engines (e.g. Node 24) instead
+# of only warning.
+engineStrict: true

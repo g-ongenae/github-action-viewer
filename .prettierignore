@@ -1,2 +1,2 @@
 # Prettier already skips node_modules/ and everything in .gitignore (dist/, coverage/, …).
-package-lock.json
+pnpm-lock.yaml
