@@ -139,6 +139,48 @@ function scenario(): FakeGitHub {
 
 const maintained = { maintainedRepositories: ['octo-org/gadgets', 'octo-org/missing'] };
 
+const bigConfig = config({
+  includeOwnRepositories: false,
+  maintainedRepositories: ['octo-org/big'],
+});
+
+/**
+ * `octo-org/big` has more than 300 open pull requests by someone else; the viewer's #999 is
+ * beyond them, known only from the search.
+ */
+function bigScenario(): FakeGitHub {
+  const big = rawRepository('octo-org/big');
+  return new FakeGitHub()
+    .on('/user', { body: { login: 'octocat' } })
+    .on('/search/issues', { body: { items: [rawSearchItem('octo-org/big', 999)] } })
+    .on('/repos/octo-org/big', { body: big })
+    .on(
+      '/repos/octo-org/big/actions/runs',
+      runsOf(rawRun(big, { head_branch: 'mine', head_sha: 'sha-pr-999' })),
+    )
+    .on('/repos/octo-org/big/pulls', (request) => {
+      const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+      return {
+        body: Array.from({ length: 100 }, (_, index) =>
+          rawPullRequest(big, {
+            number: page * 100 + index,
+            user: { login: 'hubot' },
+            head: { ref: `b-${String(page * 100 + index)}`, sha: 'x', repo: big },
+          }),
+        ),
+        headers: {
+          link: `<https://api.github.com/repos/octo-org/big/pulls?page=${String(page + 1)}>; rel="next"`,
+        },
+      };
+    })
+    .on('/repos/octo-org/big/pulls/999', {
+      body: rawPullRequest(big, {
+        number: 999,
+        head: { ref: 'mine', sha: 'sha-pr-999', repo: big },
+      }),
+    });
+}
+
 describe('collectSnapshot', () => {
   it('collects own, maintained and pull-request-only repositories', async () => {
     const github = scenario();
@@ -444,44 +486,154 @@ describe('collectSnapshot', () => {
   });
 
   it('fetches the viewer’s pull requests beyond the cap of the pull request list', async () => {
-    const big = rawRepository('octo-org/big');
-    const github = new FakeGitHub()
-      .on('/user', { body: { login: 'octocat' } })
-      .on('/search/issues', { body: { items: [rawSearchItem('octo-org/big', 999)] } })
-      .on('/repos/octo-org/big', { body: big })
-      .on(
-        '/repos/octo-org/big/actions/runs',
-        runsOf(rawRun(big, { head_branch: 'mine', head_sha: 'sha-pr-999' })),
-      )
-      .on('/repos/octo-org/big/pulls', (request) => {
-        const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
-        return {
-          body: Array.from({ length: 100 }, (_, index) =>
-            rawPullRequest(big, {
-              number: page * 100 + index,
-              user: { login: 'hubot' },
-              head: { ref: `b-${String(page * 100 + index)}`, sha: 'x', repo: big },
-            }),
-          ),
-          headers: {
-            link: `<https://api.github.com/repos/octo-org/big/pulls?page=${String(page + 1)}>; rel="next"`,
-          },
-        };
-      })
-      .on('/repos/octo-org/big/pulls/999', {
-        body: rawPullRequest(big, {
-          number: 999,
-          head: { ref: 'mine', sha: 'sha-pr-999', repo: big },
-        }),
-      });
-
-    const { snapshot } = await collectSnapshot(
-      clientFor(github),
-      config({ includeOwnRepositories: false, maintainedRepositories: ['octo-org/big'] }),
-      { now: NOW },
-    );
+    const { snapshot, refreshed } = await collectSnapshot(clientFor(bigScenario()), bigConfig, {
+      now: NOW,
+    });
 
     expect(snapshot.repositories[0]?.lines.map((line) => line.label)).toContain('#999');
+    expect(refreshed).toEqual(['octo-org/big']);
+  });
+
+  it.each([
+    ['incomplete', { body: { incomplete_results: true, items: [] } }],
+    ['failing', { status: 500, body: { message: 'Server Error' } }],
+  ])(
+    'does not vouch for a repository with a cut-off pull request list when the search is %s',
+    async (_, search) => {
+      const github = bigScenario();
+      const client = clientFor(github);
+      await collectSnapshot(client, bigConfig, { now: NOW });
+      github.on('/search/issues', search);
+
+      const second = await collectSnapshot(client, bigConfig, { now: NOW });
+
+      // The viewer's #999 lies beyond the cap and the search no longer names it: keep the
+      // previous view rather than lose its line.
+      expect(second.refreshed).toEqual([]);
+      expect(second.notRefreshed).toEqual(['octo-org/big']);
+    },
+  );
+
+  it('sends no redirect hop once rate limited', async () => {
+    const github = new FakeGitHub()
+      .on('/user', { body: { login: 'octocat' } })
+      .on('/repos/octo-org/a', delayed(5, { status: 429, headers: { 'retry-after': '30' } }))
+      .on(
+        '/repos/octo-org/b',
+        delayed(30, {
+          status: 301,
+          headers: { location: 'https://api.github.com/repositories/42' },
+        }),
+      )
+      .on('/repositories/42', { body: rawRepository('octo-org/b') });
+
+    const result = await collectSnapshot(
+      clientFor(github),
+      config({
+        includeOwnRepositories: false,
+        includeMyPullRequests: false,
+        maintainedRepositories: ['octo-org/a', 'octo-org/b'],
+      }),
+      { now: NOW, concurrency: 2 },
+    );
+
+    expect(github.paths).toEqual(['/user', '/repos/octo-org/a', '/repos/octo-org/b']);
+    expect(result.notRefreshed).toEqual(['octo-org/a', 'octo-org/b']);
+  });
+
+  describe('renamed repositories', () => {
+    const renamed = rawRepository('octo-org/new-name');
+    const moved = (location: string) => ({
+      status: 301,
+      headers: { location: `https://api.github.com${location}` },
+    });
+
+    function renameScenario(): FakeGitHub {
+      return new FakeGitHub()
+        .on('/user', { body: { login: 'octocat' } })
+        .on('/repos/octo-org/old-name', moved('/repositories/42'))
+        .on('/repositories/42', cached(renamed))
+        .on('/repos/octo-org/new-name', cached(renamed))
+        .on('/repos/octo-org/new-name/actions/runs', runsOf(rawRun(renamed)))
+        .on('/repos/octo-org/new-name/pulls', cached([]));
+    }
+    const watching = (...names: string[]) =>
+      config({
+        includeOwnRepositories: false,
+        includeMyPullRequests: false,
+        maintainedRepositories: names,
+      });
+
+    it('reports a renamed repository under its new name, in the lists and the snapshot', async () => {
+      const result = await collectSnapshot(
+        clientFor(renameScenario()),
+        watching('octo-org/old-name'),
+        { now: NOW },
+      );
+
+      expect(result.snapshot.repositories.map((r) => r.fullName)).toEqual(['octo-org/new-name']);
+      expect(result.refreshed).toEqual(['octo-org/new-name']);
+      expect(result.notRefreshed).toEqual([]);
+    });
+
+    it('keeps using the new name once it is known, failures included', async () => {
+      const github = renameScenario();
+      const client = clientFor(github);
+      await collectSnapshot(client, watching('octo-org/old-name'), { now: NOW });
+      github.on('/repos/octo-org/new-name/actions/runs', { status: 502, body: {} });
+      const before = github.requests.length;
+
+      const second = await collectSnapshot(client, watching('octo-org/old-name'), { now: NOW });
+
+      expect(second.notRefreshed).toEqual(['octo-org/new-name']);
+      expect(second.refreshed).toEqual([]);
+      expect(second.snapshot.problems).toMatchObject([
+        { kind: 'repository', repository: 'octo-org/new-name', httpStatus: 502 },
+      ]);
+      // No more redirect: the repository is read under its new name.
+      expect(github.paths.slice(before).some((path) => path.includes('old-name'))).toBe(false);
+    });
+
+    it('coalesces two names of the same repository', async () => {
+      const result = await collectSnapshot(
+        clientFor(renameScenario()),
+        watching('octo-org/old-name', 'octo-org/new-name'),
+        { now: NOW },
+      );
+
+      expect(result.snapshot.repositories.map((r) => r.fullName)).toEqual(['octo-org/new-name']);
+      expect(result.refreshed).toEqual(['octo-org/new-name']);
+      expect(result.notRefreshed).toEqual([]);
+    });
+
+    it('names a pull-request-only repository after its pull request’s base repository', async () => {
+      const github = renameScenario()
+        .on('/search/issues', {
+          body: { incomplete_results: true, items: [rawSearchItem('octo-org/old-name', 5)] },
+        })
+        .on('/repos/octo-org/old-name/pulls/5', moved('/repositories/42/pulls/5'))
+        .on('/repositories/42/pulls/5', {
+          body: rawPullRequest(renamed, {
+            number: 5,
+            head: { ref: 'f', sha: 'sha-5', repo: renamed },
+          }),
+        })
+        .on(
+          `/repos/octo-org/new-name/actions/runs?head_sha=sha-5&per_page=${String(REF_RUNS)}`,
+          runsOf(rawRun(renamed, { head_branch: 'f', head_sha: 'sha-5' })),
+        );
+
+      const result = await collectSnapshot(
+        clientFor(github),
+        config({ includeOwnRepositories: false }),
+        { now: NOW },
+      );
+
+      expect(result.snapshot.repositories.map((r) => r.fullName)).toEqual(['octo-org/new-name']);
+      // The search was incomplete: shown, but not authoritative, under the same name.
+      expect(result.notRefreshed).toEqual(['octo-org/new-name']);
+      expect(result.refreshed).toEqual([]);
+    });
   });
 
   it('fetches the default branch and the viewer’s pull requests missing from a full page', async () => {
