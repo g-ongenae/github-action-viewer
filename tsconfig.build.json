@@ -1,5 +1,5 @@
 {
-  // Emits the Node sources to dist/ (tests and config files excluded).
+  // Emits the Node sources to dist/ (tests, test fixtures and config files excluded).
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
@@ -8,5 +8,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/web/**", "src/**/*.test.ts"]
+  "exclude": ["src/web/**", "src/**/*.test.ts", "src/**/test-fixtures.ts"]
 }

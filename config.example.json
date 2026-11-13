@@ -1,0 +1,10 @@
+{
+  "maintainedRepositories": ["example-org/example-service", "example-org/example-library"],
+  "excludedRepositories": [],
+  "includeOwnRepositories": true,
+  "ownRepositoriesPushedWithinDays": 30,
+  "includeMyPullRequests": true,
+  "recentWindowHours": 24,
+  "pollIntervalSeconds": 15,
+  "port": 4680
+}
