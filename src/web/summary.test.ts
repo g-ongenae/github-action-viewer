@@ -16,6 +16,35 @@ describe('summarise', () => {
     expect(summarise(busy)).toEqual({ running: 2, failed: 2, waiting: 1 });
   });
 
+  it('counts a wait for approval that is only left on an older commit', () => {
+    const line = lineView({
+      runs: [
+        runView({ id: 1, state: 'success' }),
+        runView({ id: 2, state: 'waiting', superseded: true, headSha: 'old' }),
+      ],
+    });
+    expect(line).toMatchObject({ state: 'waiting', commitState: 'success', active: true });
+    const summary = summarise(snapshot([repositoryView('o/r', [line])]));
+    expect(summary).toEqual({ running: 0, failed: 0, waiting: 1 });
+    expect(summaryParts(summary)).toEqual([{ text: '1 waiting', tone: 'attention' }]);
+    expect(tabState(summary, 'live').title).toBe('1 waiting · My GitHub Actions');
+  });
+
+  it('counts runs still active on an older commit, once per line', () => {
+    const line = lineView({
+      runs: [
+        runView({ id: 1, state: 'failure' }),
+        runView({ id: 2, state: 'in_progress', superseded: true, headSha: 'old' }),
+        runView({ id: 3, state: 'queued', superseded: true, headSha: 'older' }),
+      ],
+    });
+    expect(summarise(snapshot([repositoryView('o/r', [line])]))).toEqual({
+      running: 1,
+      failed: 1,
+      waiting: 0,
+    });
+  });
+
   it('counts nothing without a snapshot', () => {
     expect(summarise(null)).toEqual({ running: 0, failed: 0, waiting: 0 });
   });
@@ -46,10 +75,17 @@ describe('tabState', () => {
     expect(tabState({ running: 3, failed: 0, waiting: 0 }, 'live').favicon).toBe('running');
   });
 
-  it('is quiet when nothing runs or failed', () => {
-    expect(tabState({ running: 0, failed: 0, waiting: 2 }, 'live')).toEqual({
+  it('is quiet only when nothing runs, waits or failed', () => {
+    expect(tabState({ running: 0, failed: 0, waiting: 0 }, 'live')).toEqual({
       title: 'My GitHub Actions',
       favicon: 'quiet',
+    });
+  });
+
+  it('shows a wait like the summary does', () => {
+    expect(tabState({ running: 0, failed: 0, waiting: 2 }, 'live')).toEqual({
+      title: '2 waiting · My GitHub Actions',
+      favicon: 'running',
     });
   });
 

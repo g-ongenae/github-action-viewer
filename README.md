@@ -43,7 +43,7 @@ the remaining quota and the next poll. Stop it with Ctrl+C.
 **Under the heading**, the status line says whether the page is connected (_Live_,
 _Reconnecting…_, _Disconnected_), when GitHub was last checked, and what is going on: how many
 lines are running, failed (the newest commit has a failed or timed-out run) or waiting for
-someone. Notices follow when something deserves attention: data that could not be refreshed (with
+someone (running and waiting also count runs still going on an older commit). Notices follow when something deserves attention: data that could not be refreshed (with
 the reason and since when), problems in `config.json` (the exact messages; the last valid
 configuration keeps applying), polling slowed down to save the API quota or held by a rate limit,
 and repositories that could not be read.
@@ -69,8 +69,9 @@ grey. Click the state (or press Enter on it) to list the line's workflow runs wi
 number, attempt and time, each linking to its run on GitHub; hover any date for the exact time.
 
 A repository the server could not refresh keeps its earlier lines, marked by a dashed rule and
-"may be out of date". The tab title reads e.g. "2 running · 1 failed · My GitHub Actions", and the
-tab icon is green (all quiet), blue (running), red (failed) or grey (disconnected).
+"may be out of date". The tab title repeats the summary, e.g. "2 running · 1 failed · My GitHub
+Actions", and the tab icon is green (all quiet), blue (running or waiting), red (failed) or grey
+(disconnected).
 
 ## Configuration
 

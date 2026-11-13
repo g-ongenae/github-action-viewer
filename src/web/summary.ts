@@ -7,12 +7,18 @@ import { STATE_PRESENTATION, type Tone } from './states.ts';
 
 export const PAGE_TITLE = 'My GitHub Actions';
 
+/**
+ * Lines counted by what they are doing now. A line counts once per category, and may be in
+ * several. What is active comes from all of a line's runs, including runs still active on an
+ * older commit (the core keeps those); failures come from the newest commit only. The summary,
+ * tab title and favicon all derive from this.
+ */
 export interface PageSummary {
-  /** Lines with a run in progress or queued (lines that only wait for someone are `waiting`). */
+  /** Lines with a run in progress or queued. */
   readonly running: number;
   /** Lines whose newest commit has a failed or timed-out run. */
   readonly failed: number;
-  /** Lines whose newest commit waits for someone: an approval or another action. */
+  /** Lines with a run waiting for someone: an approval, or another action. */
   readonly waiting: number;
 }
 
@@ -22,13 +28,13 @@ export function summarise(snapshot: Snapshot | null): PageSummary {
   let waiting = 0;
   for (const repository of snapshot?.repositories ?? []) {
     for (const line of repository.lines) {
-      if (line.state === 'in_progress' || line.state === 'queued') {
+      if (line.runs.some((run) => run.state === 'in_progress' || run.state === 'queued')) {
         running += 1;
       }
       if (line.failed > 0) {
         failed += 1;
       }
-      if (line.counts.waiting > 0 || line.counts.action_required > 0) {
+      if (line.runs.some((run) => run.state === 'waiting' || run.state === 'action_required')) {
         waiting += 1;
       }
     }
@@ -60,8 +66,9 @@ export function summaryParts(summary: PageSummary): SummaryPart[] {
 export type FaviconName = 'quiet' | 'running' | 'failed' | 'offline';
 
 /**
- * Tab title and favicon, so that a pinned tab tells what is going on: failures win over running
- * (they need attention), and a lost connection over both (the rest may be out of date).
+ * Tab title and favicon, so that a pinned tab tells what is going on. The title carries the same
+ * parts as the summary on the page. For the favicon, failures win over anything active (they
+ * need attention), and a lost connection over both (the rest may be out of date).
  */
 export function tabState(
   summary: PageSummary,
@@ -70,15 +77,10 @@ export function tabState(
   if (connection === 'disconnected') {
     return { title: `Disconnected · ${PAGE_TITLE}`, favicon: 'offline' };
   }
-  const parts = [];
-  if (summary.running > 0) {
-    parts.push(`${String(summary.running)} running`);
-  }
-  if (summary.failed > 0) {
-    parts.push(`${String(summary.failed)} failed`);
-  }
-  const title = parts.length > 0 ? `${parts.join(' · ')} · ${PAGE_TITLE}` : PAGE_TITLE;
-  const favicon = summary.failed > 0 ? 'failed' : summary.running > 0 ? 'running' : 'quiet';
+  const quiet = summary.running === 0 && summary.failed === 0 && summary.waiting === 0;
+  const parts = summaryParts(summary).map((part) => part.text);
+  const title = quiet ? PAGE_TITLE : `${parts.join(' · ')} · ${PAGE_TITLE}`;
+  const favicon = summary.failed > 0 ? 'failed' : quiet ? 'quiet' : 'running';
   return { title, favicon };
 }
 
