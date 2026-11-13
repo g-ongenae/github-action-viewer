@@ -20,7 +20,7 @@ const STATIC_ROOT = fileURLToPath(new URL('../../dist/web/', import.meta.url));
 /** How long shutting down may take before the process exits anyway. */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
-const USAGE = `Usage: pnpm start [--port <port>] [--config <path>]
+const USAGE = `Usage: pnpm start [--port <port>] [--config <path>] [--demo [--demo-variant <name>]]
 
 Serves a page showing the GitHub Actions runs you care about, on http://${HOST}:<port>/.
 
@@ -28,6 +28,10 @@ Options:
   -p, --port <port>    Port to listen on (default: "port" in the configuration, 4680).
   -c, --config <path>  Configuration file (default: $${CONFIG_PATH_VARIABLE}, or config.json
                        at the repository root). Changes apply without a restart.
+  --demo               Serve made-up data instead of collecting from GitHub (no token, no
+                       configuration): every state the page can show.
+  --demo-variant <name>
+                       With --demo: full (default), failing, empty or first-load.
   -h, --help           Show this help.
 
 The GitHub token is read from GITHUB_TOKEN, then GH_TOKEN, then \`gh auth token\`.
@@ -36,6 +40,8 @@ The GitHub token is read from GITHUB_TOKEN, then GH_TOKEN, then \`gh auth token\
 interface Options {
   readonly port: number | undefined;
   readonly config: string | undefined;
+  /** The demo variant to serve; undefined outside demo mode. */
+  readonly demo: string | undefined;
 }
 
 /** Parses the command line; null after printing the help. Throws on invalid arguments. */
@@ -45,6 +51,8 @@ function parseOptions(args: readonly string[]): Options | null {
     options: {
       port: { type: 'string', short: 'p' },
       config: { type: 'string', short: 'c' },
+      demo: { type: 'boolean' },
+      'demo-variant': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -61,7 +69,11 @@ function parseOptions(args: readonly string[]): Options | null {
       throw new Error(`--port: expected an integer between 1 and 65535, got "${values.port}"`);
     }
   }
-  return { port, config: values.config };
+  if (values['demo-variant'] !== undefined && values.demo !== true) {
+    throw new Error('--demo-variant: only valid with --demo');
+  }
+  const demo = values.demo === true ? (values['demo-variant'] ?? 'full') : undefined;
+  return { port, config: values.config, demo };
 }
 
 async function main(): Promise<number> {
@@ -77,6 +89,11 @@ async function main(): Promise<number> {
   }
 
   const log = createLog();
+  if (options.demo !== undefined) {
+    // Loaded only here, so that demo code never runs, or even loads, in normal mode.
+    const { serveDemo } = await import('../demo/serve.ts');
+    return serveDemo({ variant: options.demo, port: options.port, staticRoot: STATIC_ROOT, log });
+  }
   const collectionLog = new CollectionLog(log);
   let listeningPort = 0;
   let warnedPort: number | null = null;
