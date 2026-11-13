@@ -66,16 +66,26 @@ export function snapshotOf(
   );
 }
 
+/**
+ * A collection result around `snapshot`: complete unless overridden, with every repository of the
+ * snapshot that is not in `notRefreshed` counted as refreshed.
+ */
 export function collection(
   snapshot: Snapshot,
   overrides: Partial<CollectionResult> = {},
 ): CollectionResult {
+  const notRefreshed = overrides.notRefreshed ?? [];
   return {
     snapshot,
     requests: { sent: 10, notModified: 10 },
     rateLimits: { core: null, search: null },
     retryAt: null,
-    notRefreshed: [],
+    refreshed: snapshot.repositories
+      .map((repository) => repository.fullName)
+      .filter((name) => !notRefreshed.includes(name)),
+    notRefreshed,
+    discovery: { ownRepositories: 'complete', myPullRequests: 'complete' },
+    watchListComplete: true,
     ...overrides,
   };
 }

@@ -72,15 +72,15 @@ describe('CollectionLog', () => {
     log.record(
       {
         kind: 'failure',
-        message: 'GET /user: fetch failed',
-        error: new NetworkError('GET /user', 'fetch failed', false),
+        message: 'GET /user: network error',
+        error: new NetworkError('GET /user', false, null),
         failures: 2,
       },
       state('backoff', 30),
       false,
     );
     expect(lines.at(-1)).toBe(
-      'Collection failed (2 in a row): GET /user: fetch failed · next in 30s',
+      'Collection failed (2 in a row): GET /user: network error · next in 30s',
     );
     log.record(success, state(), false);
     expect(lines).toHaveLength(6);

@@ -66,11 +66,12 @@ quota resets, would leave less than 20 % of the hourly quota for your other tool
 stretched to fit (and shrinks back when activity drops). After a rate limit, nothing is sent until
 GitHub allows it.
 
-Nothing disappears from the page for lack of data: a repository the latest collection could not
-refresh (rate limit, network or server error) keeps its previous state, marked stale; when a whole
-collection fails (network down, token rejected), the page keeps the last good data, marked stale
-with the reason, and the server retries with a growing delay (up to 5 minutes) until it works again.
-A repository that is gone or no longer readable (`401`, `403`, `404`, `410`) is removed.
+Nothing disappears from the page for lack of data. A repository the latest collection could not
+read completely (rate limit, network or server error, incomplete search) keeps its previous state,
+marked stale; one that is no longer watched is only removed once the lists it came from (your
+repositories, your pull requests) were read completely. When a whole collection fails (network
+down, token rejected), the page keeps the last good data, marked stale with the reason, and the
+server retries with a growing delay (up to 5 minutes) until it works again.
 
 ## HTTP API
 

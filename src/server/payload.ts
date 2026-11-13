@@ -27,9 +27,8 @@ export interface ServerStatus {
   /** Set while collections fail: the whole snapshot is the last good one, not current data. */
   readonly stale: Staleness | null;
   /**
-   * Repositories, or pull request lines of a repository, that the latest collection could not
-   * refresh (rate limit, network or server error, incomplete list): they show their state from an
-   * earlier collection. Sorted by name.
+   * Repositories that the latest collection could not refresh (rate limit, network or server
+   * error, incomplete list): they show their state from an earlier collection. Sorted by name.
    */
   readonly staleRepositories: readonly StaleRepository[];
   readonly pollInterval: PollInterval;
@@ -50,14 +49,12 @@ export interface Staleness {
   readonly since: string;
 }
 
-/** A repository shown, in whole or in part, with the state it had when it was last refreshed. */
+/** A repository shown with the state it had when it was last refreshed. */
 export interface StaleRepository {
   /** `owner/name`, as in the snapshot. */
   readonly fullName: string;
-  /** When the stale data was collected. */
+  /** When its data was collected. */
   readonly lastRefreshedAt: string;
-  /** Keys (`LineView.key`) of the stale lines; null when the whole repository is stale. */
-  readonly lines: readonly string[] | null;
 }
 
 /** Time between two collections. */

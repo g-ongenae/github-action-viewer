@@ -178,7 +178,7 @@ describe('Poller', () => {
     const { snapshot, status } = lastState();
     expect(names(snapshot)).toEqual(['octo-org/gadgets', 'octo-org/widgets']);
     expect(status.staleRepositories).toEqual([
-      { fullName: 'octo-org/gadgets', lastRefreshedAt: new Date(NOW).toISOString(), lines: null },
+      { fullName: 'octo-org/gadgets', lastRefreshedAt: new Date(NOW).toISOString() },
     ]);
     expect(status.pollInterval).toEqual({
       baseSeconds: 15,
@@ -205,11 +205,11 @@ describe('Poller', () => {
 
     await vi.advanceTimersByTimeAsync(BASE);
     const firstFailure = new Date(Date.now()).toISOString();
-    await script.fail(new NetworkError('GET /user/repos', 'fetch failed', false));
+    await script.fail(new NetworkError('GET /user/repos', false, 'ECONNREFUSED'));
     expect(lastState().snapshot).toBe(good);
     expect(lastState().status.stale).toEqual({
       reason: 'collection_failed',
-      message: 'GET /user/repos: fetch failed',
+      message: 'GET /user/repos: network error (ECONNREFUSED)',
       since: firstFailure,
     });
     expect(lastState().status.lastSuccessAt).toBe(new Date(NOW).toISOString());
@@ -250,7 +250,7 @@ describe('Poller', () => {
     p.start();
     for (let i = 0; i < 12; i += 1) {
       await vi.advanceTimersByTimeAsync(MAX_BACKOFF_MS);
-      await script.fail(new NetworkError('GET /user', 'fetch failed', true));
+      await script.fail(new NetworkError('GET /user', true, null));
     }
     expect(lastState().status.pollInterval.currentSeconds).toBe(MAX_BACKOFF_MS / 1000);
     await p.stop();

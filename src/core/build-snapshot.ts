@@ -322,8 +322,7 @@ function newestLineDate(repository: RepositoryView): string {
   return latest(repository.lines.map((line) => line.date));
 }
 
-/** Display order of the lines of a repository (see {@link buildRepositoryView}). */
-export function compareLines(a: LineView, b: LineView): number {
+function compareLines(a: LineView, b: LineView): number {
   return (
     Number(b.kind === 'default_branch') - Number(a.kind === 'default_branch') ||
     compareDates(b.date, a.date) ||
