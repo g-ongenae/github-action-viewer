@@ -7,7 +7,16 @@
 import type { LineView, RepositoryView, RunView } from '../core/snapshot.ts';
 import type { PagePayload, StaleRepository } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
-import { element, reconcile, setAttribute, setClassName, setLink, setText } from './dom.ts';
+import {
+  element,
+  reconcile,
+  restoreSelection,
+  saveSelection,
+  setAttribute,
+  setClassName,
+  setLink,
+  setText,
+} from './dom.ts';
 import { formatAgo, formatExact, plural } from './format.ts';
 import { setStateIcon } from './icons.ts';
 import { collectNotices, emptyState, type EmptyState, type Notice } from './notices.ts';
@@ -80,6 +89,7 @@ export class PageRenderer {
 
   render(view: ViewState): void {
     const focused = this.#document.activeElement;
+    const selection = saveSelection(this.#document);
     const snapshot = view.payload?.snapshot ?? null;
     const summary = summarise(snapshot);
 
@@ -108,6 +118,8 @@ export class PageRenderer {
     ) {
       focused.focus({ preventScroll: true });
     }
+    // Moving a node clears a selection inside it, even with `moveBefore`: put it back.
+    restoreSelection(this.#document, selection);
   }
 
   /** Says `message` politely to assistive technology; nothing for an empty message. */
@@ -497,32 +509,33 @@ type InlinePiece =
   | { readonly bdi: string }
   | { readonly link: string; readonly text: string; readonly className?: string };
 
-/** Rebuilds `container` from `pieces` when they changed. */
+/**
+ * Makes `container` show `pieces`, one element per piece, matched by position and kind: a piece
+ * whose neighbours changed (say, a run count) keeps its element, so a focused link in the
+ * sentence stays focused.
+ */
 function renderInlines(container: HTMLElement, pieces: readonly InlinePiece[]): void {
-  const signature = JSON.stringify(pieces);
-  if (container.dataset.signature === signature) {
-    return;
-  }
-  container.dataset.signature = signature;
-  container.replaceChildren(
-    ...pieces.map((piece) => {
+  const kindOf = (piece: InlinePiece): string =>
+    typeof piece === 'string' ? 'text' : 'bdi' in piece ? 'bdi' : 'link';
+  reconcile(
+    container,
+    pieces.map((piece, index) => ({ piece, index })),
+    ({ piece, index }) => `${String(index)}:${kindOf(piece)}`,
+    ({ piece }) => element(kindOf(piece) === 'bdi' ? 'bdi' : 'span'),
+    (target, { piece }) => {
       if (typeof piece === 'string') {
-        return document.createTextNode(piece);
+        setText(target, piece);
+      } else if ('bdi' in piece) {
+        setText(target, piece.bdi);
+      } else {
+        setLink(
+          target,
+          piece.link,
+          piece.text,
+          piece.className === undefined ? {} : { className: piece.className },
+        );
       }
-      if ('bdi' in piece) {
-        const bdi = element('bdi');
-        bdi.textContent = piece.bdi;
-        return bdi;
-      }
-      const span = element('span');
-      setLink(
-        span,
-        piece.link,
-        piece.text,
-        piece.className === undefined ? {} : { className: piece.className },
-      );
-      return span;
-    }),
+    },
   );
 }
 

@@ -214,6 +214,40 @@ describe('PageRenderer: updates keep the reader’s state', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
+  it('keeps a focused link of an expanded panel when the text around it changes', () => {
+    render(twoRepositories());
+    const line = lineOf('pr:7');
+    line.querySelector<HTMLButtonElement>('.line-toggle')?.click();
+    const commitLink = line.querySelector<HTMLAnchorElement>('.panel-commit a');
+    const prLink = line.querySelector<HTMLAnchorElement>('.panel-pull-request a');
+    commitLink?.focus();
+    expect(document.activeElement).toBe(commitLink);
+    expect(line.querySelector('.panel-commit')?.textContent).toContain('2 runs on this commit');
+
+    // A third run starts: the count in the commit sentence changes.
+    render(
+      payload([
+        repositoryView('octo-org/widgets', [
+          lineIn('in_progress'),
+          prLine(7, {
+            runs: [
+              runView({ id: 70, state: 'failure' }),
+              runView({ id: 71, state: 'in_progress' }),
+              runView({ id: 72, state: 'queued' }),
+            ],
+          }),
+        ]),
+        repositoryView('octo-org/gadgets', [lineIn('success')]),
+      ]),
+    );
+
+    expect(line.querySelector('.panel-commit')?.textContent).toContain('3 runs on this commit');
+    expect(line.querySelector('.panel-commit a')).toBe(commitLink);
+    expect(line.querySelector('.panel-pull-request a')).toBe(prLink);
+    expect(commitLink?.isConnected).toBe(true);
+    expect(document.activeElement).toBe(commitLink);
+  });
+
   it('remembers an expanded line that disappears and comes back', () => {
     render(twoRepositories());
     lineOf('pr:7').querySelector<HTMLButtonElement>('.line-toggle')?.click();
