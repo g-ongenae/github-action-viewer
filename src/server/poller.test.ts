@@ -268,6 +268,38 @@ describe('Poller', () => {
     await p.stop();
   });
 
+  it('waits past the 2^31 ms timer limit instead of firing at once', async () => {
+    const delays: number[] = [];
+    const p = new Poller({
+      collect: script.collect,
+      config: () => config,
+      onUpdate: (state, outcome) => updates.push({ state, outcome }),
+      clock: {
+        ...systemClock,
+        setTimeout: (callback, ms) => {
+          delays.push(ms);
+          return systemClock.setTimeout(callback, ms);
+        },
+      },
+    });
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // A rate limit lifting in 30 days: well past what setTimeout can hold (2^31 − 1 ms).
+    const waitMs = 2 ** 31 + 30 * 86_400_000;
+    const retryAt = new Date(Date.now() + waitMs);
+    await script.fail(new RateLimitError('GET /user', 403, 'primary', 'core', retryAt));
+    expect(lastState().status.nextPollAt).toBe(retryAt.toISOString());
+
+    await vi.advanceTimersByTimeAsync(2 ** 31);
+    expect(script.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(waitMs - 2 ** 31 - 1);
+    expect(script.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.calls).toHaveLength(2);
+    expect(Math.max(...delays)).toBeLessThanOrEqual(2 ** 31 - 1);
+    await p.stop();
+  });
+
   it('collects right after the running collection when asked meanwhile, with the new config', async () => {
     const p = poller();
     p.start();

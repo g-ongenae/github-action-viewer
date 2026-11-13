@@ -22,6 +22,12 @@ export const systemClock: Clock = {
   },
 };
 
+/**
+ * Longest delay a Node timer holds (2^31 − 1 ms, about 24.8 days); a longer one fires after 1 ms.
+ * Longer waits are made of several timers.
+ */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** Longest wait between two attempts while collections fail (unless the base interval is longer). */
 export const MAX_BACKOFF_MS = 5 * 60_000;
 
@@ -145,14 +151,29 @@ export class Poller {
 
   #schedule(delayMs: number): void {
     this.#cancelTimer();
-    this.#nextPollAt = new Date(this.#clock.now() + delayMs).toISOString();
-    this.#timer = this.#clock.setTimeout(() => {
-      this.#timer = null;
-      this.#rerun = false;
-      this.#running = this.#run().finally(() => {
-        this.#running = null;
-      });
-    }, delayMs);
+    const dueAt = this.#clock.now() + delayMs;
+    this.#nextPollAt = new Date(dueAt).toISOString();
+    this.#arm(dueAt);
+  }
+
+  /** Sets a timer for `dueAt`, in steps of at most {@link MAX_TIMER_MS}. */
+  #arm(dueAt: number): void {
+    const remaining = Math.max(0, dueAt - this.#clock.now());
+    this.#timer = this.#clock.setTimeout(
+      () => {
+        this.#timer = null;
+        // Checked against the clock rather than assumed: a capped timer covers part of the wait.
+        if (this.#clock.now() < dueAt) {
+          this.#arm(dueAt);
+          return;
+        }
+        this.#rerun = false;
+        this.#running = this.#run().finally(() => {
+          this.#running = null;
+        });
+      },
+      Math.min(remaining, MAX_TIMER_MS),
+    );
   }
 
   #cancelTimer(): void {
