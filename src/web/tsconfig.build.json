@@ -1,0 +1,16 @@
+{
+  // Emits the page's modules to dist/web/modules/, keeping their layout under src/ so that a
+  // module the page imports from src/core/ lands in dist/web/modules/core/. Tests are left out,
+  // so this program sees only browser code and the core modules it imports: no Node types, and
+  // a Node API used by mistake fails the build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "..",
+    "outDir": "../../dist/web/modules",
+    "sourceMap": true,
+    "inlineSources": true
+  },
+  "include": ["*.ts"],
+  "exclude": ["*.test.ts", "test-fixtures.ts"]
+}
