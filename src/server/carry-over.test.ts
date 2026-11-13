@@ -67,7 +67,7 @@ describe('carryOver', () => {
       stale: true,
     },
     {
-      name: 'not refreshed but present (incomplete search): the previous view',
+      name: 'not refreshed but present (possibly incomplete): the previous view',
       shown: [newer],
       refreshed: [],
       notRefreshed: ['Octo-Org/Widgets'],
@@ -111,6 +111,27 @@ describe('carryOver', () => {
       collection(snapshot, { refreshed: [], notRefreshed: ['octo-org/gadgets'] }),
     );
     expect(result).toEqual({ snapshot, staleRepositories: [] });
+  });
+
+  it('shows only the problem of a repository that never had a view (a typo in the config)', () => {
+    const snapshot = snapshotOf([repo('octo-org/widgets')], NOW, [
+      { kind: 'repository', repository: 'octo-org/widgest', httpStatus: 404, message: 'Not Found' },
+    ]);
+    const result = carryOver(
+      published(repo('octo-org/widgets')),
+      collection(snapshot, { notRefreshed: ['octo-org/widgest'] }),
+    );
+    expect(result).toEqual({ snapshot, staleRepositories: [] });
+    expect(result.snapshot.problems).toHaveLength(1);
+  });
+
+  it('keys previous views by the snapshot’s name, whatever the case', () => {
+    // A repository renamed on GitHub is reported under its current name everywhere.
+    const result = carryOver(
+      published(repo('octo-org/Widgets')),
+      collection(snapshotOf([]), { notRefreshed: ['OCTO-ORG/widgets'] }),
+    );
+    expect(names(result.snapshot)).toEqual(['octo-org/Widgets']);
   });
 
   it('merges kept and new repositories in display order', () => {

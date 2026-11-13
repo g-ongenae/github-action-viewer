@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util';
 import type { Config } from '../core/config.ts';
 import { GitHubClient } from '../github/client.ts';
 import { collectSnapshot } from '../github/collect.ts';
-import { resolveToken } from '../github/token.ts';
+import { MalformedTokenError } from '../github/errors.ts';
+import { resolveToken, TokenNotFoundError } from '../github/token.ts';
 import { CollectionLog } from './collection-log.ts';
 import { CONFIG_PATH_VARIABLE, ConfigFile, configPath } from './config-file.ts';
 import { HOST, ViewerServer } from './http.ts';
@@ -111,10 +112,9 @@ async function main(): Promise<number> {
   try {
     resolved = await resolveToken();
   } catch (error) {
-    // Token errors say what to do and carry no secret; print the message alone, never the
-    // error object (its cause or stack could hold more).
+    // Only the project's own token errors are printed: they say what to do and hold no secret.
     process.stderr.write(
-      `${error instanceof Error ? error.message : 'Could not get a GitHub token.'}\n`,
+      `${error instanceof TokenNotFoundError || error instanceof MalformedTokenError ? error.message : 'Could not get a GitHub token.'}\n`,
     );
     return 1;
   }
