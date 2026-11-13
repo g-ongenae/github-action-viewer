@@ -11,6 +11,12 @@ export function formatCollection(result: CollectionResult): string {
   for (const problem of snapshot.problems) {
     out.push(`! ${describeProblem(problem)}`);
   }
+  if (!result.watchListComplete) {
+    const { ownRepositories, myPullRequests } = result.discovery;
+    out.push(
+      `! Incomplete watch list: your repositories ${ownRepositories}, your pull requests ${myPullRequests}.`,
+    );
+  }
   for (const repository of snapshot.repositories) {
     out.push('', `${repository.fullName}  (${repository.reasons.join(', ')})`);
     for (const line of repository.lines) {

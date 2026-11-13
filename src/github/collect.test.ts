@@ -4,6 +4,7 @@ import { GitHubClient } from './client.ts';
 import { collectSnapshot, RECENT_RUNS, REF_RUNS } from './collect.ts';
 import { AccessDeniedError } from './errors.ts';
 import {
+  delayed,
   FakeGitHub,
   rawPullRequest,
   rawRepository,
@@ -171,6 +172,20 @@ describe('collectSnapshot', () => {
     expect(notRefreshed).toEqual(['octo-org/missing']);
   });
 
+  it('says which repositories were read and how completely the sources were', async () => {
+    const result = await collectSnapshot(clientFor(scenario()), config(maintained), { now: NOW });
+
+    expect(result.discovery).toEqual({ ownRepositories: 'complete', myPullRequests: 'complete' });
+    expect(result.watchListComplete).toBe(true);
+    expect(result.refreshed).toEqual([
+      'octo-org/gadgets',
+      'octo-org/tools',
+      'octocat/no-prs',
+      'octocat/widgets',
+    ]);
+    expect(result.notRefreshed).toEqual(['octo-org/missing']);
+  });
+
   it('isolates a repository that cannot be read', async () => {
     const { snapshot } = await collectSnapshot(clientFor(scenario()), config(maintained), {
       now: NOW,
@@ -227,17 +242,20 @@ describe('collectSnapshot', () => {
   it('honours the switches of the configuration', async () => {
     const github = scenario();
 
-    const { snapshot } = await collectSnapshot(
+    const result = await collectSnapshot(
       clientFor(github),
       config({ includeOwnRepositories: false, includeMyPullRequests: false, ...maintained }),
       { now: NOW },
     );
+    const { snapshot } = result;
 
     expect(snapshot.repositories.map((repository) => repository.fullName)).toEqual([
       'octo-org/gadgets',
     ]);
     expect(github.paths.some((path) => path.startsWith('/user/repos'))).toBe(false);
     expect(github.paths.some((path) => path.startsWith('/search/'))).toBe(false);
+    expect(result.discovery).toEqual({ ownRepositories: 'skipped', myPullRequests: 'skipped' });
+    expect(result.watchListComplete).toBe(true);
   });
 
   it('carries on without the repository list or the search when they fail', async () => {
@@ -245,7 +263,8 @@ describe('collectSnapshot', () => {
       .on('/user/repos', { status: 500, body: { message: 'Server Error' } })
       .on('/search/issues', { status: 422, body: { message: 'Validation Failed' } });
 
-    const { snapshot } = await collectSnapshot(clientFor(github), config(maintained), { now: NOW });
+    const result = await collectSnapshot(clientFor(github), config(maintained), { now: NOW });
+    const { snapshot } = result;
 
     expect(snapshot.repositories.map((repository) => repository.fullName)).toEqual([
       'octo-org/gadgets',
@@ -255,6 +274,59 @@ describe('collectSnapshot', () => {
       'other',
       'repository',
     ]);
+    // A failed source is not an empty one: absent repositories may still exist.
+    expect(result.discovery).toEqual({ ownRepositories: 'failed', myPullRequests: 'failed' });
+    expect(result.watchListComplete).toBe(false);
+  });
+
+  it('keeps the pages read before a later page of a source fails', async () => {
+    const github = scenario()
+      .on('/user/repos', {
+        ...cached([rawRepository('octocat/widgets')]),
+        headers: { link: '<https://api.github.com/user/repos?page=2>; rel="next"' },
+      })
+      .on('/user/repos?page=2', { status: 502, body: { message: 'Bad Gateway' } });
+
+    const result = await collectSnapshot(
+      clientFor(github),
+      config({ ownRepositoriesPushedWithinDays: null, includeMyPullRequests: false }),
+      { now: NOW },
+    );
+
+    expect(result.discovery.ownRepositories).toBe('partial');
+    expect(result.watchListComplete).toBe(false);
+    expect(result.refreshed).toEqual(['octocat/widgets']);
+  });
+
+  it('treats a source cut off by the page cap as partial', async () => {
+    const github = scenario().on('/search/issues', (request) => {
+      const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+      return {
+        body: { incomplete_results: false, items: [rawSearchItem('octo-org/tools', 5)] },
+        headers: {
+          link: `<https://api.github.com/search/issues?q=x&page=${String(page + 1)}>; rel="next"`,
+        },
+      };
+    });
+
+    const result = await collectSnapshot(clientFor(github), config(), { now: NOW });
+
+    expect(result.discovery.myPullRequests).toBe('partial');
+  });
+
+  it('does not vouch for pull-request-only repositories when the search was incomplete', async () => {
+    const github = scenario().on('/search/issues', {
+      body: { incomplete_results: true, items: [rawSearchItem('octo-org/tools', 5)] },
+    });
+
+    const result = await collectSnapshot(clientFor(github), config(), { now: NOW });
+
+    expect(result.discovery.myPullRequests).toBe('partial');
+    expect(result.watchListComplete).toBe(false);
+    // Shown, but other pull requests of the viewer there may be missing: not authoritative.
+    expect(result.snapshot.repositories.map((r) => r.fullName)).toContain('octo-org/tools');
+    expect(result.notRefreshed).toEqual(['octo-org/tools']);
+    expect(result.refreshed).not.toContain('octo-org/tools');
   });
 
   it('throws when the viewer cannot be identified', async () => {
@@ -286,7 +358,7 @@ describe('collectSnapshot', () => {
         kind: 'rate_limited',
         resetAt: '2026-11-13T17:13:20.000Z',
         message:
-          'GitHub primary rate limit reached (core); 3 of 5 repositories were not refreshed.',
+          'GitHub primary rate limit reached (core); 4 of 5 repositories were not refreshed.',
       },
     ]);
     expect(result.retryAt).toEqual(new Date('2026-11-13T17:13:20.000Z'));
@@ -297,6 +369,119 @@ describe('collectSnapshot', () => {
       'octocat/widgets',
     ]);
     expect(github.paths.some((path) => path.includes('octocat/widgets'))).toBe(false);
+    expect(result.refreshed).toEqual(['octo-org/gadgets']);
+  });
+
+  it('sends nothing more from repositories in progress once rate limited', async () => {
+    const b = rawRepository('octo-org/b');
+    const github = new FakeGitHub()
+      .on('/user', { body: { login: 'octocat' } })
+      .on('/repos/octo-org/a', delayed(5, { status: 429, headers: { 'retry-after': '30' } }))
+      // Answered after the rate limit: the repository must not go on.
+      .on('/repos/octo-org/b', delayed(30, { body: b }));
+
+    const result = await collectSnapshot(
+      clientFor(github),
+      config({
+        includeOwnRepositories: false,
+        includeMyPullRequests: false,
+        maintainedRepositories: ['octo-org/a', 'octo-org/b'],
+      }),
+      { now: NOW, concurrency: 2 },
+    );
+
+    expect(github.paths).toEqual(['/user', '/repos/octo-org/a', '/repos/octo-org/b']);
+    expect(result.notRefreshed).toEqual(['octo-org/a', 'octo-org/b']);
+    expect(result.refreshed).toEqual([]);
+    expect(result.retryAt).toEqual(new Date(NOW.getTime() + 30_000));
+  });
+
+  it('fetches no further page once rate limited', async () => {
+    const b = rawRepository('octo-org/b');
+    const github = new FakeGitHub()
+      .on('/user', { body: { login: 'octocat' } })
+      .on('/repos/octo-org/a', delayed(5, { status: 429, headers: { 'retry-after': '30' } }))
+      .on('/repos/octo-org/b', { body: b })
+      .on('/repos/octo-org/b/actions/runs', runsOf())
+      .on(
+        '/repos/octo-org/b/pulls',
+        delayed(30, {
+          body: [],
+          headers: { link: '<https://api.github.com/repos/octo-org/b/pulls?page=2>; rel="next"' },
+        }),
+      );
+
+    const result = await collectSnapshot(
+      clientFor(github),
+      config({
+        includeOwnRepositories: false,
+        includeMyPullRequests: false,
+        maintainedRepositories: ['octo-org/a', 'octo-org/b'],
+      }),
+      { now: NOW, concurrency: 2 },
+    );
+
+    expect(github.paths.some((path) => path.includes('page=2'))).toBe(false);
+    expect(result.notRefreshed).toEqual(['octo-org/a', 'octo-org/b']);
+  });
+
+  it('carries on when only the search quota is exhausted', async () => {
+    const github = scenario().on('/search/issues', {
+      status: 403,
+      body: { message: 'API rate limit exceeded' },
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1794590000' },
+    });
+
+    const result = await collectSnapshot(clientFor(github), config(maintained), { now: NOW });
+
+    expect(result.discovery.myPullRequests).toBe('failed');
+    expect(result.refreshed).toEqual(['octo-org/gadgets', 'octocat/no-prs', 'octocat/widgets']);
+    expect(result.retryAt).toEqual(new Date('2026-11-13T17:13:20.000Z'));
+    expect(result.snapshot.problems.map((problem) => problem.kind)).toEqual([
+      'repository',
+      'rate_limited',
+    ]);
+  });
+
+  it('fetches the viewer’s pull requests beyond the cap of the pull request list', async () => {
+    const big = rawRepository('octo-org/big');
+    const github = new FakeGitHub()
+      .on('/user', { body: { login: 'octocat' } })
+      .on('/search/issues', { body: { items: [rawSearchItem('octo-org/big', 999)] } })
+      .on('/repos/octo-org/big', { body: big })
+      .on(
+        '/repos/octo-org/big/actions/runs',
+        runsOf(rawRun(big, { head_branch: 'mine', head_sha: 'sha-pr-999' })),
+      )
+      .on('/repos/octo-org/big/pulls', (request) => {
+        const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+        return {
+          body: Array.from({ length: 100 }, (_, index) =>
+            rawPullRequest(big, {
+              number: page * 100 + index,
+              user: { login: 'hubot' },
+              head: { ref: `b-${String(page * 100 + index)}`, sha: 'x', repo: big },
+            }),
+          ),
+          headers: {
+            link: `<https://api.github.com/repos/octo-org/big/pulls?page=${String(page + 1)}>; rel="next"`,
+          },
+        };
+      })
+      .on('/repos/octo-org/big/pulls/999', {
+        body: rawPullRequest(big, {
+          number: 999,
+          head: { ref: 'mine', sha: 'sha-pr-999', repo: big },
+        }),
+      });
+
+    const { snapshot } = await collectSnapshot(
+      clientFor(github),
+      config({ includeOwnRepositories: false, maintainedRepositories: ['octo-org/big'] }),
+      { now: NOW },
+    );
+
+    expect(snapshot.repositories[0]?.lines.map((line) => line.label)).toContain('#999');
   });
 
   it('fetches the default branch and the viewer’s pull requests missing from a full page', async () => {
@@ -345,7 +530,7 @@ describe('collectSnapshot', () => {
         body: rawPullRequest(tools, { number: 5, state: 'closed' }),
       });
 
-    const { snapshot, notRefreshed } = await collectSnapshot(
+    const { snapshot, notRefreshed, refreshed } = await collectSnapshot(
       clientFor(github),
       config({ includeOwnRepositories: false }),
       { now: NOW },
@@ -353,6 +538,7 @@ describe('collectSnapshot', () => {
 
     expect(snapshot.repositories).toEqual([]);
     expect(notRefreshed).toEqual([]);
+    expect(refreshed).toEqual(['octo-org/tools']);
     expect(github.paths.some((path) => path.includes('/actions/'))).toBe(false);
   });
 });

@@ -12,7 +12,7 @@ export interface FakeResponse {
 }
 
 /** A route: a fixed response, or a function of the request (to change answers over time). */
-export type Route = FakeResponse | ((request: Request) => FakeResponse);
+export type Route = FakeResponse | ((request: Request) => FakeResponse | Promise<FakeResponse>);
 
 /**
  * Fake `fetch` answering from routes keyed by `pathname?search` (exact match first, then the
@@ -34,7 +34,7 @@ export class FakeGitHub {
     return this.requests.map((request) => keyOf(new URL(request.url)));
   }
 
-  readonly fetch: typeof globalThis.fetch = (input, init) => {
+  readonly fetch: typeof globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     this.requests.push(request);
     const url = new URL(request.url);
@@ -43,9 +43,9 @@ export class FakeGitHub {
       route === undefined
         ? { status: 404, body: { message: 'Not Found' } }
         : typeof route === 'function'
-          ? route(request)
+          ? await route(request)
           : route;
-    return Promise.resolve(this.#respond(request, response));
+    return this.#respond(request, response);
   };
 
   #respond(request: Request, response: FakeResponse): Response {
@@ -71,6 +71,16 @@ export class FakeGitHub {
     const body = response.body === undefined ? null : JSON.stringify(response.body);
     return new Response(body, { status: response.status ?? 200, headers });
   }
+}
+
+/** A route answering `response` after `ms` milliseconds, to order concurrent requests. */
+export function delayed(ms: number, response: FakeResponse): Route {
+  return () =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        resolve(response);
+      }, ms);
+    });
 }
 
 function keyOf(url: URL): string {
