@@ -137,14 +137,39 @@ describe('newest commit of a line', () => {
       }),
     );
     const main = line(view, 'branch:main');
-    // The state is the verdict on the newest commit; `active` says something still runs.
-    expect(main.state).toBe('success');
+    // `state` reads active because something on the ref still runs; `commitState`, `counts` and
+    // `failed` keep the verdict on the newest commit.
+    expect(main).toMatchObject({ state: 'in_progress', commitState: 'success', failed: 0 });
+    expect(main.counts).toMatchObject({ success: 1, in_progress: 0 });
     expect(main.active).toBe(true);
     expect(view.active).toBe(true);
     expect(main.runs.map((r) => [r.id, r.superseded, r.headSha])).toEqual([
       [2, false, 'new'],
       [1, true, 'old'],
     ]);
+  });
+
+  it('shows "running, latest commit failed" when the newest commit failed under an older run', () => {
+    const view = only(
+      repository({
+        runs: [
+          run({
+            id: 1,
+            headSha: 'old',
+            status: 'queued',
+            conclusion: null,
+            createdAt: '2026-11-13T09:00:00Z',
+          }),
+          run({ id: 2, headSha: 'new', conclusion: 'failure', createdAt: '2026-11-13T10:00:00Z' }),
+        ],
+      }),
+    );
+    expect(line(view, 'branch:main')).toMatchObject({
+      state: 'queued',
+      commitState: 'failure',
+      failed: 1,
+      active: true,
+    });
   });
 
   it('keeps the latest run per workflow and event: highest run number, then attempt', () => {
@@ -309,6 +334,64 @@ describe('mapping runs to pull requests', () => {
     expect(line(view, 'pr:7').runs.map((r) => r.id)).toEqual([2]);
   });
 
+  it('shows both lines for a pull request whose head is the default branch', () => {
+    const view = only(
+      repository({
+        runs: [run({ pullRequestNumbers: [7] })],
+        pullRequests: [pullRequest({ headBranch: 'main', headSha: 'sha-main' })],
+      }),
+    );
+    expect(keys(view)).toEqual(['branch:main', 'pr:7']);
+    expect(line(view, 'pr:7').runs.map((r) => r.id)).toEqual([1]);
+  });
+
+  it('does not attach default-branch runs to a fork pull request on the same commit', () => {
+    const view = only(
+      repository({
+        runs: [run()],
+        pullRequests: [
+          pullRequest({ headBranch: 'main', headSha: 'sha-main', headRepository: FORK }),
+        ],
+      }),
+    );
+    expect(keys(view)).toEqual(['branch:main']);
+  });
+
+  it('matches a pull request from a deleted fork by head commit', () => {
+    const view = only(
+      repository({
+        runs: [run({ headBranch: 'patch', headSha: 'f1', headRepository: null })],
+        pullRequests: [pullRequest({ headBranch: 'patch', headSha: 'f1', headRepository: null })],
+      }),
+    );
+    expect(keys(view)).toEqual(['pr:7']);
+  });
+
+  it('puts an associated run without a head branch on its pull request line', () => {
+    const view = only(
+      repository({
+        runs: [run({ headBranch: null, headSha: 'sha-feature', pullRequestNumbers: [7] })],
+        pullRequests: [pullRequest()],
+      }),
+    );
+    expect(keys(view)).toEqual(['pr:7']);
+  });
+
+  it('lists a run once when it matches a pull request both by association and by head', () => {
+    const view = only(
+      repository({
+        runs: [run({ headBranch: 'feature', headSha: 'sha-feature', pullRequestNumbers: [7] })],
+        pullRequests: [pullRequest()],
+      }),
+    );
+    expect(line(view, 'pr:7').runs.map((r) => r.id)).toEqual([1]);
+  });
+
+  it('compares the head repository case-insensitively', () => {
+    const view = only(repository({ runs: [run({ headRepository: REPO.toUpperCase() })] }));
+    expect(keys(view)).toEqual(['branch:main']);
+  });
+
   it('drops runs of a fork that match no open pull request', () => {
     const view = only(
       repository({
@@ -383,6 +466,43 @@ describe('which lines are shown', () => {
       }),
     ).repositories;
     expect(views(view)).toEqual(shown ? ['branch:other', 'branch:v1.0.0', 'pr:9'] : []);
+  });
+
+  it('counts activity on older commits of the ref towards the recent window', () => {
+    const view = only(
+      repository({
+        runs: [
+          // Older commit: started three days ago, finished an hour ago.
+          run({
+            id: 1,
+            headBranch: 'feature',
+            headSha: 'old',
+            createdAt: '2026-11-10T10:00:00Z',
+            updatedAt: '2026-11-13T11:00:00Z',
+          }),
+          // Newest commit: finished two days ago.
+          run({
+            id: 2,
+            headBranch: 'feature',
+            headSha: 'new',
+            createdAt: '2026-11-11T10:00:00Z',
+            updatedAt: '2026-11-11T10:05:00Z',
+          }),
+        ],
+      }),
+    );
+    expect(keys(view)).toEqual(['branch:feature']);
+    expect(line(view, 'branch:feature').runs.map((r) => r.id)).toEqual([2]);
+  });
+
+  it.each([
+    ['2026-11-12T12:00:00Z', true],
+    ['2026-11-12T11:59:59Z', false],
+  ])('includes the start of the recent window (updated %s → shown: %s)', (updatedAt, shown) => {
+    const views = snapshotOf(
+      repository({ runs: [run({ headBranch: 'other', createdAt: updatedAt, updatedAt })] }),
+    ).repositories;
+    expect(views).toHaveLength(shown ? 1 : 0);
   });
 
   it('honours the configured recent window', () => {

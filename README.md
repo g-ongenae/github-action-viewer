@@ -50,9 +50,9 @@ grant read access to _Metadata_, _Pull requests_ and _Actions_ on the repositori
 
 Requirements:
 
-- Node.js 26: the version CI uses is in [`.node-version`](.node-version), which `fnm use` /
-  `nvm use` also read. `package.json#engines` accepts `^26.0.0`, and `pnpm install` refuses other
-  versions.
+- Node.js 26: the version CI uses is in [`.node-version`](.node-version), which `fnm use` also
+  reads (nvm does not: use `nvm use "$(cat .node-version)"`). `package.json#engines` accepts
+  `^26.0.0`, and `pnpm install` refuses other versions.
 - pnpm 12: the exact version is pinned in `package.json#packageManager`. Any recent pnpm switches
   to it automatically.
 

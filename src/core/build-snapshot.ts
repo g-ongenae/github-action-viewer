@@ -60,16 +60,23 @@ export function buildSnapshot(input: SnapshotInput, options: SnapshotOptions): S
  * with several open pull requests):
  * 1. a run on the default branch of the repository itself goes to the default-branch line — a
  *    fork's `main` is not the default branch, the head repository tells them apart;
- * 2. otherwise, a run goes to the open pull requests GitHub associates with it (`pull_requests`)
- *    or, when there are none (always the case for forks), to the open pull requests with the
- *    same head commit, or the same head branch in the same head repository;
- * 3. otherwise, a run on a branch of the repository itself goes to that branch's line;
+ * 2. a run also goes to the open pull requests GitHub associates with it (`pull_requests`) or,
+ *    when there are none (always the case for forks), to the open pull requests with the same
+ *    head branch, or the same head commit, in the same head repository (or any head commit when
+ *    the pull request's fork was deleted). So a pull request from the default branch has its own
+ *    line next to the default-branch line;
+ * 3. a run that went to neither, on a branch of the repository itself, goes to that branch's
+ *    line;
  * 4. any other run (e.g. for a closed fork pull request) is dropped.
  *
+ * Refs are identified by name only (`head_branch`), because workflow runs carry no reliable
+ * branch-or-tag field: a tag named like a branch shares that branch's line. Tags named like the
+ * default branch are pathological enough to accept this.
+ *
  * Visibility: in a repository the viewer owns or maintains, the default-branch line and the
- * viewer's pull requests are always shown; other lines only while active or updated within the
- * recent window. In a repository shown only because of the viewer's pull requests, only those
- * pull requests are shown.
+ * viewer's pull requests are always shown; other lines only while active or while any run of the
+ * ref, older commits included, was updated within the recent window. In a repository shown only
+ * because of the viewer's pull requests, only those pull requests are shown.
  *
  * Order: default branch first, then by line date (newest first), then by key.
  */
@@ -82,19 +89,20 @@ export function buildRepositoryView(
   const recentSince = options.now.getTime() - options.recentWindowHours * 3_600_000;
 
   const lines = [...groupRuns(repository).values()]
-    .map(buildLine)
-    .filter((line) => {
-      const viewersPullRequest = sameName(line.pullRequest?.author ?? null, viewer);
+    .filter((group) => {
+      const viewersPullRequest = sameName(group.pullRequest?.author ?? null, viewer);
       if (!watched) {
         return viewersPullRequest;
       }
       return (
-        line.kind === 'default_branch' ||
+        group.kind === 'default_branch' ||
         viewersPullRequest ||
-        line.active ||
-        Date.parse(line.updatedAt) >= recentSince
+        group.runs.some(
+          (run) => isActiveRunState(stateOf(run)) || Date.parse(run.updatedAt) >= recentSince,
+        )
       );
     })
+    .map(buildLine)
     .sort(compareLines);
 
   if (lines.length === 0) {
@@ -135,9 +143,9 @@ function groupRuns(repository: RepositoryInput): Map<string, RefGroup> {
   for (const run of uniqueRuns(repository.runs)) {
     const onOwnBranch =
       sameName(run.headRepository, repository.fullName) && run.headBranch !== null;
-    if (onOwnBranch && run.headBranch === repository.defaultBranch) {
+    const onDefaultBranch = onOwnBranch && run.headBranch === repository.defaultBranch;
+    if (onDefaultBranch) {
       add(run, branchGroup(repository.defaultBranch, 'default_branch'));
-      continue;
     }
     const pullRequests = pullRequestsOf(run, repository.pullRequests);
     for (const pullRequest of pullRequests) {
@@ -148,7 +156,7 @@ function groupRuns(repository: RepositoryInput): Map<string, RefGroup> {
         pullRequest,
       });
     }
-    if (pullRequests.length === 0 && onOwnBranch) {
+    if (pullRequests.length === 0 && onOwnBranch && !onDefaultBranch) {
       add(run, branchGroup(run.headBranch, 'branch'));
     }
   }
@@ -161,7 +169,8 @@ function branchGroup(branch: string, kind: LineKind): Omit<RefGroup, 'runs'> {
 
 /**
  * The open pull requests a run belongs to: GitHub's association first, then a match on the head
- * commit, or on the head branch within the same head repository.
+ * branch or head commit within the same head repository. The head commit alone is enough when the
+ * pull request's head repository is unknown (deleted fork).
  */
 function pullRequestsOf(
   run: WorkflowRunInput,
@@ -171,10 +180,11 @@ function pullRequestsOf(
   if (associated.length > 0) {
     return associated;
   }
-  return pullRequests.filter(
-    (pr) =>
-      pr.headSha === run.headSha ||
-      (pr.headBranch === run.headBranch && sameName(pr.headRepository, run.headRepository)),
+  return pullRequests.filter((pr) =>
+    pr.headRepository === null
+      ? pr.headSha === run.headSha
+      : sameName(pr.headRepository, run.headRepository) &&
+        (pr.headSha === run.headSha || pr.headBranch === run.headBranch),
   );
 }
 
@@ -201,7 +211,10 @@ function buildLine(group: RefGroup): LineView {
     ...current.sort(compareCurrentRuns).map((run) => toRunView(run, false)),
     ...superseded.sort(compareSupersededRuns).map((run) => toRunView(run, true)),
   ];
-  const summary = summariseRunStates(current.map(stateOf));
+  // The newest commit's verdict, and the line state, which also reads active while a run of an
+  // older commit still runs (superseded runs are all active).
+  const commitSummary = summariseRunStates(current.map(stateOf));
+  const lineState = summariseRunStates(runs.map((run) => run.state)).state;
   const pullRequest = group.pullRequest;
 
   return {
@@ -215,9 +228,10 @@ function buildLine(group: RefGroup): LineView {
       url: pullRequest.url,
       draft: pullRequest.draft,
     },
-    state: summary.state,
-    counts: summary.counts,
-    failed: summary.failed,
+    state: lineState,
+    commitState: commitSummary.state,
+    counts: commitSummary.counts,
+    failed: commitSummary.failed,
     active: runs.some((run) => isActiveRunState(run.state)),
     date: latest(current.map((run) => run.createdAt)),
     updatedAt: latest(current.map((run) => run.updatedAt)),
