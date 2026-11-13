@@ -288,8 +288,9 @@ h1 {
 
 /* Repositories ----------------------------------------------------------------------------- */
 
+/* Lines lay out by the width of the page's column; expanded runs by the width of their panel. */
 main {
-  container-type: inline-size;
+  container: page / inline-size;
 }
 
 .repository + .repository {
@@ -523,6 +524,7 @@ main {
 /* Expanded runs ---------------------------------------------------------------------------- */
 
 .line-panel {
+  container: runs / inline-size;
   margin: 0 0 0.75rem calc(var(--col-state) + var(--col-gap));
   font-size: 0.875rem;
 }
@@ -552,7 +554,10 @@ main {
 
 .run {
   display: grid;
-  grid-template-columns: 8rem minmax(6rem, 16rem) 9rem 7.5rem var(--col-date) minmax(0, 1fr);
+  /* Every column but the state and the name can shrink, so the row never overflows its panel. */
+  grid-template-columns:
+    8rem minmax(6rem, 16rem) minmax(0, 9rem) minmax(0, 7.5rem) minmax(4.5rem, var(--col-date))
+    minmax(0, 1fr);
   column-gap: var(--col-gap);
   align-items: center;
   min-height: 2rem;
@@ -652,7 +657,7 @@ main {
 
 /* Narrow widths (a side panel, a phone): two rows per line ------------------------------- */
 
-@container (max-width: 44rem) {
+@container page (max-width: 44rem) {
   .line-row {
     grid-template-columns: var(--col-state) minmax(0, 1fr) auto;
     grid-template-areas:
@@ -683,7 +688,10 @@ main {
   .line-panel {
     margin-left: 1.25rem;
   }
+}
 
+/* Expanded runs in a narrow panel: state, name and date, then event and number beneath. */
+@container runs (max-width: 40rem) {
   .run {
     grid-template-columns: 7.5rem minmax(0, 1fr) auto;
     padding: 0.3rem 0;
