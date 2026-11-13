@@ -90,7 +90,16 @@ describe('parseConfig', () => {
     ],
     [{ recentWindowHours: -1 }, 'recentWindowHours', 'expected a number >= 0, got -1'],
     [{ recentWindowHours: '24' }, 'recentWindowHours', 'expected a number >= 0, got "24"'],
-    [{ pollIntervalSeconds: 5 }, 'pollIntervalSeconds', 'expected an integer >= 10, got 5'],
+    [
+      { pollIntervalSeconds: 5 },
+      'pollIntervalSeconds',
+      'expected an integer between 10 and 3600, got 5',
+    ],
+    [
+      { pollIntervalSeconds: 2_592_000 },
+      'pollIntervalSeconds',
+      'expected an integer between 10 and 3600, got 2592000',
+    ],
     [{ port: 0 }, 'port', 'expected an integer between 1 and 65535, got 0'],
     [{ port: 70000 }, 'port', 'expected an integer between 1 and 65535, got 70000'],
     [{ port: { value: 1 } }, 'port', 'expected an integer between 1 and 65535, got an object'],

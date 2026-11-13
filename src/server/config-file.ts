@@ -1,16 +1,22 @@
-import { watch, type FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CONFIG, formatConfigIssues, parseConfig, type Config } from '../core/config.ts';
 import type { Log } from './log.ts';
+import { systemClock, type Clock } from './poller.ts';
 import type { ConfigStatus } from './payload.ts';
 
 /** Environment variable overriding the path of the configuration file. */
 export const CONFIG_PATH_VARIABLE = 'GITHUB_ACTION_VIEWER_CONFIG';
 
-/** Quiet time after the last change event before the file is read again. */
-export const RELOAD_DEBOUNCE_MS = 200;
+/** Time between two reads of the configuration file while watching it. */
+export const CONFIG_POLL_MS = 1000;
+
+/** The system clock, with timers that do not keep the process alive. */
+const unrefClock: Clock = {
+  ...systemClock,
+  setTimeout: (callback, ms) => setTimeout(callback, ms).unref(),
+};
 
 /**
  * Path of the configuration file: `explicit` (a command-line flag) if given, then
@@ -69,7 +75,10 @@ export interface ConfigFileOptions {
   readonly log: Log;
   /** Called after a reload changed the configuration in use or its status. */
   readonly onChange?: (change: { readonly configChanged: boolean }) => void;
-  readonly debounceMs?: number;
+  /** Time between two reads while watching; default {@link CONFIG_POLL_MS}. */
+  readonly pollMs?: number;
+  /** Timers for polling; the default ones do not keep the process alive. */
+  readonly clock?: Clock;
 }
 
 /**
@@ -78,22 +87,37 @@ export interface ConfigFileOptions {
  * valid configuration (the defaults if there never was one) and is reported through
  * {@link status}, for the page.
  */
+/**
+ * The configuration file, kept up to date: {@link watch} re-reads it every second or so, so that
+ * edits apply without a restart. A missing file means the defaults; an invalid file keeps the last
+ * valid configuration (the defaults if there never was one) and is reported through
+ * {@link status}, for the page.
+ *
+ * Watching is done by reading the path again rather than with `fs.watch`: reading follows
+ * symbolic links (a config kept in a dotfiles repository), survives editors that save by renaming
+ * a new file over the old one, deletion and re-creation, and works when neither the file nor its
+ * directory exists yet. The file is tiny, so the cost is negligible.
+ */
 export class ConfigFile {
   readonly path: string;
   readonly #options: ConfigFileOptions;
+  readonly #clock: Clock;
   #config: Config = DEFAULT_CONFIG;
   #status: ConfigStatus = { state: 'missing', problems: null, fallback: null };
   /** Whether a valid file was ever read: what an invalid file falls back to. */
   #hadValid = false;
-  /** What the last read found, to ignore events that did not change anything; null before. */
-  #lastRead: string | null = null;
-  #watcher: FSWatcher | null = null;
-  #debounce: ReturnType<typeof setTimeout> | null = null;
-  #reloading: Promise<void> = Promise.resolve();
+  /** What the applied read found (see `describe`); null before the first read. */
+  #applied: string | null = null;
+  /** A different read seen once: applied if the next poll sees it again. */
+  #pending: string | null = null;
+  #timer: unknown = null;
+  #watching = false;
+  #polling: Promise<void> = Promise.resolve();
 
   constructor(path: string, options: ConfigFileOptions) {
     this.path = path;
     this.#options = options;
+    this.#clock = options.clock ?? unrefClock;
   }
 
   /** The configuration in use. */
@@ -107,78 +131,65 @@ export class ConfigFile {
 
   /** Reads the file and logs what was found. */
   async load(): Promise<void> {
-    await this.#reload();
+    const read = await readConfigFile(this.path);
+    this.#apply(read, describe(read));
   }
 
   /**
-   * Watches the file for changes. The directory is watched rather than the file, because editors
-   * save by writing a new file and renaming it over the old one, which ends a watch on the file
-   * itself; bursts of events are debounced.
+   * Re-reads the file periodically. A change is applied once two reads in a row agree, which
+   * filters out most files caught while an editor is writing them. It is a debounce, not a
+   * guarantee: a half-written file that stays unchanged across two reads is still reported (or
+   * applied, if it happens to be valid). Editors that save atomically never expose one.
    */
   watch(): void {
-    if (this.#watcher !== null) {
+    if (this.#watching) {
       return;
     }
-    const name = basename(this.path);
-    try {
-      this.#watcher = watch(dirname(this.path), { persistent: false }, (_event, filename) => {
-        if (filename === null || filename === name) {
-          this.#scheduleReload();
-        }
-      });
-      this.#watcher.on('error', (error) => {
-        this.#options.log(
-          `Stopped watching the configuration (${error.message}); restart to apply changes.`,
-        );
-        this.close();
-      });
-    } catch (error) {
-      this.#options.log(
-        `Cannot watch ${this.path} (${(error as Error).message}); restart to apply changes.`,
-      );
-    }
+    this.#watching = true;
+    this.#arm();
   }
 
   /** Stops watching. */
   close(): void {
-    this.#watcher?.close();
-    this.#watcher = null;
-    if (this.#debounce !== null) {
-      clearTimeout(this.#debounce);
-      this.#debounce = null;
+    this.#watching = false;
+    if (this.#timer !== null) {
+      this.#clock.clearTimeout(this.#timer);
+      this.#timer = null;
     }
   }
 
-  /** Resolves once pending reloads are done (for tests). */
+  /** Resolves once the running poll, if any, is done (for tests). */
   async settled(): Promise<void> {
-    await this.#reloading;
+    await this.#polling;
   }
 
-  #scheduleReload(): void {
-    if (this.#debounce !== null) {
-      clearTimeout(this.#debounce);
-    }
-    this.#debounce = setTimeout(() => {
-      this.#debounce = null;
-      // Reloads run one after the other, so that an older read never wins over a newer one.
-      this.#reloading = this.#reloading.then(() => this.#reload());
-    }, this.#options.debounceMs ?? RELOAD_DEBOUNCE_MS);
+  #arm(): void {
+    this.#timer = this.#clock.setTimeout(() => {
+      this.#timer = null;
+      this.#polling = this.#poll();
+    }, this.#options.pollMs ?? CONFIG_POLL_MS);
   }
 
-  async #reload(): Promise<void> {
+  async #poll(): Promise<void> {
     const read = await readConfigFile(this.path);
-    const found =
-      read.kind === 'missing'
-        ? 'missing'
-        : read.kind === 'ok'
-          ? `ok:${read.text}`
-          : `invalid:${read.text ?? read.problems}`;
-    if (found === this.#lastRead) {
+    if (!this.#watching) {
       return;
     }
-    const first = this.#lastRead === null;
-    this.#lastRead = found;
+    const found = describe(read);
+    if (found === this.#applied) {
+      this.#pending = null;
+    } else if (found === this.#pending) {
+      this.#pending = null;
+      this.#apply(read, found);
+    } else {
+      this.#pending = found;
+    }
+    this.#arm();
+  }
 
+  #apply(read: ConfigRead, found: string): void {
+    const first = this.#applied === null;
+    this.#applied = found;
     const previousConfig = this.#config;
     const { log } = this.#options;
     switch (read.kind) {
@@ -208,6 +219,18 @@ export class ConfigFile {
         configChanged: JSON.stringify(previousConfig) !== JSON.stringify(this.#config),
       });
     }
+  }
+}
+
+/** What a read found, as a string that differs whenever the outcome would. */
+function describe(read: ConfigRead): string {
+  switch (read.kind) {
+    case 'missing':
+      return 'missing';
+    case 'ok':
+      return `ok:${read.text}`;
+    case 'invalid':
+      return `invalid:${read.text ?? read.problems}`;
   }
 }
 

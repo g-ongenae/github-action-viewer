@@ -1,4 +1,6 @@
 import type { CollectionResult } from '../github/collect.ts';
+import { GitHubError, MalformedTokenError } from '../github/errors.ts';
+import { TokenNotFoundError } from '../github/token.ts';
 import type { LineView, Problem } from '../core/snapshot.ts';
 
 /** Compact, human-readable rendering of a collection, for `pnpm run snapshot`. */
@@ -73,4 +75,28 @@ function describeProblem(problem: Problem): string {
 /** `2026-11-13T10:00:05Z` → `2026-11-13 10:00Z`. */
 function shortDate(iso: string): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z`;
+}
+
+/** An error of the snapshot script whose message is safe to print. */
+export class ScriptError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScriptError';
+  }
+}
+
+/**
+ * What to print for a failure: the message of this project's own errors, which never quote a
+ * token or response content; only the type of anything else, whose message could.
+ */
+export function describeFailure(error: unknown): string {
+  if (
+    error instanceof GitHubError ||
+    error instanceof MalformedTokenError ||
+    error instanceof TokenNotFoundError ||
+    error instanceof ScriptError
+  ) {
+    return error.message;
+  }
+  return error instanceof Error ? `Unexpected error (${error.name}).` : 'Unexpected error.';
 }

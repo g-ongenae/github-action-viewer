@@ -41,7 +41,7 @@ compared case-insensitively.
 | `ownRepositoriesPushedWithinDays` | `30`    | Only watch your own repositories pushed to within this many days (an integer ≥ 1), to skip dormant ones; `null` watches them all. |
 | `includeMyPullRequests`           | `true`  | Watch every repository where you have an open pull request, showing only your pull requests there.                                |
 | `recentWindowHours`               | `24`    | How long finished runs of other branches and other people's pull requests stay on the page (a number ≥ 0).                        |
-| `pollIntervalSeconds`             | `15`    | Time between two refreshes from GitHub, in whole seconds (at least 10).                                                           |
+| `pollIntervalSeconds`             | `15`    | Time between two refreshes from GitHub, in whole seconds, from 10 to 3600.                                                        |
 | `port`                            | `4680`  | Port of the local server (bound to `127.0.0.1`).                                                                                  |
 
 In a repository you own or maintain, the page always shows the default branch and your open pull
@@ -50,7 +50,9 @@ for `recentWindowHours` after they finish.
 
 The file is `config.json` at the repository root, or the path given by `--config` or the
 `GITHUB_ACTION_VIEWER_CONFIG` environment variable. Edits apply **without a restart**: the server
-watches the file, re-reads it a moment after it is saved, and collects again at once.
+re-reads the file every second, applies a change once two reads in a row agree (within about two
+seconds of saving), and collects again at once. It follows symbolic links (e.g. a file kept in a
+dotfiles repository), and the file and its directory may be created after the server started.
 
 - No file: the defaults apply, and the log says where to create one.
 - An invalid file (not JSON, or a wrong value) is ignored: the server keeps the last valid

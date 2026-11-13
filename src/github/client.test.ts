@@ -145,6 +145,41 @@ describe('GitHubClient redirects', () => {
     expect(await failure(client.get('/loop', {}, identity))).toBeInstanceOf(HttpError);
     expect(github.requests).toHaveLength(MAX_REDIRECTS + 1);
   });
+
+  it('asks the gate before every hop', async () => {
+    const { github, client } = setup();
+    github.on('/alias', moved('https://api.github.com/target'));
+    github.on('/target', { body: { login: 'octocat' } });
+    const stop = new Error('stopped');
+    let calls = 0;
+    const gate = (): void => {
+      calls += 1;
+      if (calls > 1) {
+        throw stop;
+      }
+    };
+
+    await expect(client.get('/alias', {}, login, { gate })).rejects.toBe(stop);
+    expect(github.paths).toEqual(['/alias']);
+  });
+
+  it('does not serve the body of a previous redirect target', async () => {
+    const { github, client } = setup();
+    let target = 'a';
+    github.on('/alias', () => moved(`https://api.github.com/${target}`));
+    // Validators need not be unique across resources: both answer to "v1".
+    github.on('/a', { body: { login: 'from-a' }, etag: '"v1"' });
+    github.on('/b', { body: { login: 'from-b' }, etag: '"v1"' });
+
+    await expect(client.get('/alias', {}, login)).resolves.toBe('from-a');
+    target = 'b';
+    await expect(client.get('/alias', {}, login)).resolves.toBe('from-b');
+    await expect(client.get('/alias', {}, login)).resolves.toBe('from-b');
+
+    const validators = github.requests.map((r) => r.headers.get('if-none-match'));
+    // Only the hop to the target the cached body came from carries the validator.
+    expect(validators).toEqual([null, null, null, null, null, '"v1"']);
+  });
 });
 
 describe('GitHubClient conditional requests', () => {
@@ -430,10 +465,15 @@ describe('GitHubClient errors', () => {
   it('rejects a body that is not JSON', async () => {
     const client = new GitHubClient({
       token: TOKEN,
-      fetch: () => Promise.resolve(new Response('<html>', { status: 200 })),
+      fetch: () => Promise.resolve(new Response('<html>private content', { status: 200 })),
     });
 
-    expect(await failure(client.get('/user', {}, login))).toBeInstanceOf(UnexpectedPayloadError);
+    const error = await failure(client.get('/user', {}, login));
+
+    expect(error).toBeInstanceOf(UnexpectedPayloadError);
+    // JSON.parse errors quote the body: neither the message nor a cause carries it.
+    expect(error.message).toBe('GET /user: response is not valid JSON');
+    expect(error.cause).toBeUndefined();
   });
 
   it('turns a parser failure into an unexpected-payload error naming the field', async () => {
