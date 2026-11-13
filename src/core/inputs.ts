@@ -39,8 +39,10 @@ export interface WorkflowRunInput {
   /** `head_commit`, when GitHub returns it. */
   readonly headCommit: HeadCommitInput | null;
   /**
-   * Numbers from `pull_requests[]`: the open pull requests GitHub associates with the run. Empty
-   * for pull requests from forks.
+   * Numbers from `pull_requests[]`: the open pull requests GitHub associates with the run, limited
+   * to those of this repository whose head is the run's branch (GitHub also lists pull requests of
+   * other repositories there, e.g. of forks based on this branch; the client filters them out).
+   * Empty for pull requests from forks.
    */
   readonly pullRequestNumbers: readonly number[];
   /** `run_number`: increases with each run of the same workflow. */

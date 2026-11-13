@@ -30,6 +30,22 @@ In a repository you own or maintain, the page always shows the default branch an
 requests; other branches and other people's pull requests appear while their runs are active and
 for `recentWindowHours` after they finish.
 
+## Trying it against GitHub
+
+Until the server lands, `pnpm run snapshot` collects the page once from the live API and prints
+it, one line per branch or pull request, followed by the number of requests it took and the
+remaining API quota. `pnpm run snapshot --json` prints the whole result as JSON instead.
+
+It reads `config.json` from the repository root if there is one (the defaults otherwise), and
+uses the first token found among:
+
+1. the `GITHUB_TOKEN` environment variable,
+2. the `GH_TOKEN` environment variable,
+3. `gh auth token` (the [GitHub CLI](https://cli.github.com/)'s login).
+
+The token only needs to read: the tool sends nothing but `GET` requests. With a fine-grained token,
+grant read access to _Metadata_, _Pull requests_ and _Actions_ on the repositories to watch.
+
 ## Development
 
 Requirements:
@@ -56,3 +72,4 @@ pnpm run check  # run every gate CI runs
 | `pnpm test:watch`    | Run Vitest in watch mode                               |
 | `pnpm test:coverage` | Run the tests with V8 coverage (report in `coverage/`) |
 | `pnpm check`         | `format:check`, `lint`, `typecheck`, `test`, `build`   |
+| `pnpm snapshot`      | Collect once from the live GitHub API and print it     |
