@@ -10,7 +10,7 @@ A small local web page that shows, in real time, the GitHub Actions runs I care 
 
 ## Development
 
-Requirements: Node.js 24 (see [`.nvmrc`](.nvmrc)) and npm.
+Requirements: Node.js 24 (`engines.node` in [`package.json`](package.json), also read by CI) and npm.
 
 ```sh
 npm ci          # install dependencies from the lockfile
