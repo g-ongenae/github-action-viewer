@@ -1,0 +1,12 @@
+{
+  // Browser project: the page under src/web/, its tests and test fixtures. DOM lib, no Node
+  // types. Used by `pnpm run typecheck`, ESLint (the nearest tsconfig.json) and editors.
+  // `tsconfig.build.json` next to it emits the page's modules without the tests.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2025", "dom"],
+    "types": [],
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}

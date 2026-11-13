@@ -10,9 +10,9 @@
     "node": "^26.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "build:web": "node src/scripts/build-web.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json && pnpm run build:web",
+    "build:web": "node src/scripts/build-web.ts && tsc -p src/web/tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/web/tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -23,7 +23,8 @@
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "snapshot": "node src/scripts/snapshot.ts",
     "start": "pnpm run build:web && node src/server/main.ts",
-    "dev": "pnpm run build:web && node --watch src/server/main.ts"
+    "dev": "node src/scripts/dev.ts",
+    "demo": "pnpm run build:web && node src/server/main.ts --demo"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -31,6 +32,7 @@
     "@vitest/coverage-v8": "^5.1.0",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
+    "happy-dom": "^21.0.4",
     "prettier": "^3.10.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",
