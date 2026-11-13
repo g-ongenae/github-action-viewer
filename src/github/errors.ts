@@ -25,13 +25,33 @@ export class AccessDeniedError extends GitHubError {}
 /** Any other unexpected status, e.g. a 5xx or a 422. */
 export class HttpError extends GitHubError {}
 
-/** No response: DNS, connection or TLS failure, or the request timed out. */
+/**
+ * No response: DNS, connection or TLS failure, or the request timed out. It carries neither the
+ * text nor the cause of the underlying error, which can quote request headers (the token).
+ */
 export class NetworkError extends GitHubError {
   readonly timedOut: boolean;
+  /** System or undici error code, e.g. `ECONNRESET`, when there was one. */
+  readonly code: string | null;
 
-  constructor(request: string, message: string, timedOut: boolean, options?: ErrorOptions) {
-    super(request, null, message, options);
+  constructor(request: string, timedOut: boolean, code: string | null) {
+    super(
+      request,
+      null,
+      timedOut ? 'request timed out' : `network error${code === null ? '' : ` (${code})`}`,
+    );
     this.timedOut = timedOut;
+    this.code = code;
+  }
+}
+
+/** The token cannot be a GitHub token. The message never quotes it. */
+export class MalformedTokenError extends Error {
+  constructor(source = 'The GitHub token') {
+    super(
+      `${source} is malformed: it must be non-empty printable ASCII, without spaces or line breaks.`,
+    );
+    this.name = 'MalformedTokenError';
   }
 }
 

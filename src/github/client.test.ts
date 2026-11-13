@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { API_VERSION, GitHubClient, MAX_PAGES, nextPageUrl } from './client.ts';
+import { API_VERSION, GitHubClient, MAX_PAGES, MAX_REDIRECTS, nextPageUrl } from './client.ts';
 import {
   AccessDeniedError,
   HttpError,
+  MalformedTokenError,
   NetworkError,
   NotFoundError,
   RateLimitError,
@@ -64,10 +65,85 @@ describe('GitHubClient requests', () => {
     expect(github.paths).toEqual(['/search/issues?q=is%3Apr+author%3Aoctocat&per_page=100']);
   });
 
-  it('rejects paths that could leave the API', async () => {
-    const { client } = setup();
-    await expect(client.get('//example.com/x', {}, identity)).rejects.toThrow(TypeError);
-    await expect(client.get('user', {}, identity)).rejects.toThrow(TypeError);
+  it.each(['//example.com/x', 'user', '/\\example.com/x', '/\\\\example.com/x', '/\t/example.com'])(
+    'refuses %j, which could leave the API, before sending anything',
+    async (path) => {
+      const { github, client } = setup();
+      await expect(client.get(path, {}, identity)).rejects.toThrow(TypeError);
+      expect(github.requests).toHaveLength(0);
+    },
+  );
+
+  it('refuses a malformed token up front, without echoing it', () => {
+    for (const token of ['', 'ghp_abc\ndef', 'ghp_abc def', 'ghp_\u0000x', 'ghp_é']) {
+      expect(() => new GitHubClient({ token })).toThrow(MalformedTokenError);
+      try {
+        new GitHubClient({ token });
+      } catch (error) {
+        expect(String(error)).not.toContain(token === '' ? 'never' : token);
+      }
+    }
+  });
+});
+
+describe('GitHubClient redirects', () => {
+  const moved = (location: string): FakeResponse => ({
+    status: 301,
+    body: { message: 'Moved Permanently' },
+    headers: { location },
+  });
+
+  it('handles redirects itself', async () => {
+    const { github, client } = setup();
+    github.on('/user', { body: { login: 'octocat' } });
+
+    await client.get('/user', {}, login);
+
+    expect(github.requests[0]?.redirect).toBe('manual');
+  });
+
+  it('follows a redirect within the API, as for a renamed repository', async () => {
+    const { github, client } = setup();
+    github.on('/repos/octo-org/old-name', moved('https://api.github.com/repositories/42'));
+    github.on('/repositories/42', { body: { login: 'renamed' }, etag: '"r"' });
+
+    await expect(client.get('/repos/octo-org/old-name', {}, login)).resolves.toBe('renamed');
+    await expect(client.get('/repos/octo-org/old-name', {}, login)).resolves.toBe('renamed');
+
+    expect(github.paths).toEqual([
+      '/repos/octo-org/old-name',
+      '/repositories/42',
+      '/repos/octo-org/old-name',
+      '/repositories/42',
+    ]);
+    expect(github.requests.every((r) => r.headers.get('authorization') === `Bearer ${TOKEN}`)).toBe(
+      true,
+    );
+    expect(github.requests[3]?.headers.get('if-none-match')).toBe('"r"');
+    expect(client.stats).toEqual({ requests: 4, notModified: 1 });
+  });
+
+  it.each([
+    'https://example.com/repositories/42',
+    'http://api.github.com/repositories/42',
+    'https://user:secret@api.github.com/repositories/42',
+    '/\\example.com/x',
+  ])('refuses a redirect to %s', async (location) => {
+    const { github, client } = setup();
+    github.on('/repos/o/r', moved(location));
+
+    const error = await failure(client.get('/repos/o/r', {}, identity));
+
+    expect(error).toBeInstanceOf(UnexpectedPayloadError);
+    expect(github.requests).toHaveLength(1);
+  });
+
+  it('gives up after a few redirects', async () => {
+    const { github, client } = setup();
+    github.on('/loop', moved('https://api.github.com/loop'));
+
+    expect(await failure(client.get('/loop', {}, identity))).toBeInstanceOf(HttpError);
+    expect(github.requests).toHaveLength(MAX_REDIRECTS + 1);
   });
 });
 
@@ -295,18 +371,40 @@ describe('GitHubClient errors', () => {
     expect(error.message).toBe(`GET /repos/o/r: ${String(status)} Nope`);
   });
 
-  it('maps a failed fetch to a network error', async () => {
+  it('maps a failed fetch to a network error keeping only its error code', async () => {
     const client = new GitHubClient({
       token: TOKEN,
       fetch: () =>
-        Promise.reject(new TypeError('fetch failed', { cause: new Error('ECONNRESET') })),
+        Promise.reject(
+          new TypeError('fetch failed', {
+            cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+          }),
+        ),
     });
 
     const error = await failure(client.get('/user', {}, login));
 
     expect(error).toBeInstanceOf(NetworkError);
-    expect(error).toMatchObject({ status: null, timedOut: false });
-    expect(error.message).toBe('GET /user: network error: ECONNRESET');
+    expect(error).toMatchObject({ status: null, timedOut: false, code: 'ECONNRESET' });
+    expect(error.message).toBe('GET /user: network error (ECONNRESET)');
+  });
+
+  it('drops the text and cause of a fetch error, which can quote request headers', async () => {
+    const client = new GitHubClient({
+      token: TOKEN,
+      fetch: () =>
+        Promise.reject(
+          new TypeError(`Headers.append: "Bearer ${TOKEN}" is an invalid header value.`, {
+            cause: Object.assign(new Error(`invalid value Bearer ${TOKEN}`), { code: TOKEN }),
+          }),
+        ),
+    });
+
+    const error = await failure(client.get('/user', {}, login));
+
+    expect(error.message).toBe('GET /user: network error');
+    expect(error.cause).toBeUndefined();
+    expect(JSON.stringify(Object.entries(error))).not.toContain(TOKEN);
   });
 
   it('times out', async () => {

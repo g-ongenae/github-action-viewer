@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isWellFormedToken } from './client.ts';
+import { MalformedTokenError } from './errors.ts';
+
+/** How long `gh auth token` may take; generous, as it can be slow on a loaded machine. */
+export const GH_AUTH_TOKEN_TIMEOUT_MS = 30_000;
 
 /** Where the token came from. */
 export type TokenSource = 'GITHUB_TOKEN' | 'GH_TOKEN' | 'gh auth token';
@@ -31,13 +36,17 @@ export class TokenNotFoundError extends Error {
   }
 }
 
-/** Finds a token: `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`. */
+/**
+ * Finds a token: `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`. Surrounding whitespace is
+ * trimmed; a token that is still not well formed (see `isWellFormedToken`) throws a
+ * {@link MalformedTokenError} naming where it came from, never the value.
+ */
 export async function resolveToken(options: TokenResolutionOptions = {}): Promise<ResolvedToken> {
   const env = options.env ?? process.env;
   for (const name of ['GITHUB_TOKEN', 'GH_TOKEN'] as const) {
     const token = env[name]?.trim();
     if (token) {
-      return { token, source: name };
+      return checked(token, name, name);
     }
   }
 
@@ -51,14 +60,21 @@ export async function resolveToken(options: TokenResolutionOptions = {}): Promis
   if (token === '') {
     throw new TokenNotFoundError('it printed nothing');
   }
-  return { token, source: 'gh auth token' };
+  return checked(token, 'gh auth token', 'The output of `gh auth token`');
+}
+
+function checked(token: string, source: TokenSource, description: string): ResolvedToken {
+  if (!isWellFormedToken(token)) {
+    throw new MalformedTokenError(description);
+  }
+  return { token, source };
 }
 
 /** Runs `gh auth token` without a shell, with a timeout, and returns what it prints. */
 async function ghAuthToken(): Promise<string> {
   const { stdout } = await promisify(execFile)('gh', ['auth', 'token'], {
     shell: false,
-    timeout: 10_000,
+    timeout: GH_AUTH_TOKEN_TIMEOUT_MS,
     windowsHide: true,
   });
   return stdout;
