@@ -1,6 +1,7 @@
 import {
   AccessDeniedError,
   HttpError,
+  MalformedTokenError,
   NetworkError,
   NotFoundError,
   RateLimitError,
@@ -15,6 +16,17 @@ const API_ORIGIN = 'https://api.github.com';
 
 /** Upper bound of {@link PageOptions.maxPages}, whatever the caller asks for. */
 export const MAX_PAGES = 10;
+
+/**
+ * Redirects followed per request. GitHub redirects requests for a renamed or transferred
+ * repository (`301` to `https://api.github.com/repositories/<id>/…`); each hop costs quota.
+ */
+export const MAX_REDIRECTS = 3;
+
+/** Whether a token can be sent in a header: printable ASCII, no spaces, no line breaks. */
+export function isWellFormedToken(token: string): boolean {
+  return /^[\x21-\x7E]+$/.test(token);
+}
 
 /** Quota of one rate-limit resource, from the `x-ratelimit-*` headers of its latest response. */
 export interface RateLimitStatus {
@@ -84,6 +96,10 @@ interface ParsedResponse<T> {
  * Minimal read-only client for the GitHub REST API. It only ever sends GET requests: the token
  * may have write scopes, and this tool must not be able to use them.
  *
+ * - Destinations: every request, pagination link and redirect target is checked to be on
+ *   `https://api.github.com` (without credentials in the URL) before the token is attached.
+ *   Redirects are handled by the client itself (`redirect: 'manual'`) and followed only within
+ *   the API, at most {@link MAX_REDIRECTS} times.
  * - Conditional requests: the ETag of each response is remembered per URL and sent back as
  *   `If-None-Match`; a `304` is served from the cache and does not cost quota.
  * - Rate limits: the `x-ratelimit-*` headers are recorded per resource ({@link rateLimit}), and
@@ -103,7 +119,11 @@ export class GitHubClient {
   #requests = 0;
   #notModified = 0;
 
+  /** Throws a {@link MalformedTokenError} for a token that cannot be a GitHub token. */
   constructor(options: GitHubClientOptions) {
+    if (!isWellFormedToken(options.token)) {
+      throw new MalformedTokenError();
+    }
     this.#token = options.token;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#userAgent = options.userAgent ?? 'github-action-viewer';
@@ -158,31 +178,20 @@ export class GitHubClient {
     signal: AbortSignal | undefined,
   ): Promise<ParsedResponse<T>> {
     const request = describeRequest(url);
+    // Keyed by the URL asked for: after a redirect, the next request is conditional on every hop.
     const cached = this.#cache.get(url.href);
-    const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${this.#token}`,
-      'User-Agent': this.#userAgent,
-      'X-GitHub-Api-Version': API_VERSION,
-    };
-    if (cached) {
-      headers['If-None-Match'] = cached.etag;
-    }
-    const timeout = AbortSignal.timeout(this.#timeoutMs);
-    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-
-    let response: Response;
-    let text: string;
-    this.#requests += 1;
-    try {
-      response = await this.#fetch(url, { method: 'GET', headers, signal: combined });
-      this.#recordRateLimit(response.headers);
-      text = await response.text();
-    } catch (error) {
-      if (signal?.aborted) {
-        throw signal.reason;
+    let target = url;
+    let { response, text } = await this.#send(target, request, cached?.etag ?? null, signal);
+    for (let hop = 1; isRedirect(response.status); hop += 1) {
+      if (hop > MAX_REDIRECTS) {
+        throw new HttpError(
+          request,
+          response.status,
+          `${String(response.status)} too many redirects`,
+        );
       }
-      throw toNetworkError(request, error, timeout.aborted);
+      target = redirectTarget(request, response, target);
+      ({ response, text } = await this.#send(target, request, cached?.etag ?? null, signal));
     }
 
     if (response.status === 304 && cached) {
@@ -203,6 +212,49 @@ export class GitHubClient {
       this.#cache.set(url.href, { etag, text, link });
     }
     return { data, link };
+  }
+
+  /**
+   * Sends one GET. This is the only place the token is attached, and it first checks that the URL
+   * is on the API: no caller-supplied string, link or redirect can send the token elsewhere.
+   */
+  async #send(
+    url: URL,
+    request: string,
+    etag: string | null,
+    signal: AbortSignal | undefined,
+  ): Promise<{ response: Response; text: string }> {
+    if (!isApiUrl(url)) {
+      throw new TypeError(`Refusing to send the token outside ${API_ORIGIN}`);
+    }
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${this.#token}`,
+      'User-Agent': this.#userAgent,
+      'X-GitHub-Api-Version': API_VERSION,
+    };
+    if (etag !== null) {
+      headers['If-None-Match'] = etag;
+    }
+    const timeout = AbortSignal.timeout(this.#timeoutMs);
+    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+
+    this.#requests += 1;
+    try {
+      const response = await this.#fetch(url, {
+        method: 'GET',
+        headers,
+        signal: combined,
+        redirect: 'manual',
+      });
+      this.#recordRateLimit(response.headers);
+      return { response, text: await response.text() };
+    } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason;
+      }
+      throw new NetworkError(request, timeout.aborted, errorCode(error));
+    }
   }
 
   #recordRateLimit(headers: Headers): void {
@@ -266,14 +318,34 @@ export class GitHubClient {
 }
 
 function apiUrl(path: string, query: Query): URL {
-  if (!path.startsWith('/') || path.startsWith('//')) {
-    throw new TypeError(`API path must start with a single "/": ${path}`);
+  const url = path.startsWith('/') ? URL.parse(path, API_ORIGIN) : null;
+  // The origin check matters: URL parsing turns `/\\host/x` or `/\t/host` into `https://host/x`.
+  if (url === null || !isApiUrl(url)) {
+    throw new TypeError(`Not a path of the GitHub API: ${JSON.stringify(path)}`);
   }
-  const url = new URL(path, API_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     url.searchParams.set(key, String(value));
   }
   return url;
+}
+
+/** Exactly the API origin, with no user name or password in the URL. */
+function isApiUrl(url: URL): boolean {
+  return url.origin === API_ORIGIN && url.username === '' && url.password === '';
+}
+
+function isRedirect(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+/** Where a redirect from `from` leads; it must stay on the API. */
+function redirectTarget(request: string, response: Response, from: URL): URL {
+  const location = response.headers.get('location');
+  const target = location === null ? null : URL.parse(location, from);
+  if (target === null || !isApiUrl(target)) {
+    throw new UnexpectedPayloadError(request, response.status, 'redirect outside the GitHub API');
+  }
+  return target;
 }
 
 /** `GET /path?query`: identifies a request in messages, without the host or any header. */
@@ -313,7 +385,7 @@ export function nextPageUrl(request: string, link: string | null): URL | null {
     const match = /^\s*<([^>]*)>\s*;(.*)$/.exec(part);
     if (match?.[2]?.split(';').some((param) => /^\s*rel="?next"?\s*$/.test(param)) === true) {
       const url = URL.parse(match[1] ?? '');
-      if (url?.origin !== API_ORIGIN) {
+      if (url === null || !isApiUrl(url)) {
         throw new UnexpectedPayloadError(request, null, 'next page link outside the GitHub API');
       }
       return url;
@@ -343,13 +415,22 @@ function githubMessage(text: string): string | null {
   return null;
 }
 
-function toNetworkError(request: string, error: unknown, timedOut: boolean): NetworkError {
-  if (timedOut) {
-    return new NetworkError(request, 'request timed out', true, { cause: error });
+/**
+ * The system or undici code of a fetch failure (`ECONNRESET`, `UND_ERR_CONNECT_TIMEOUT`…), the
+ * only part of it kept: its message and cause can quote request headers.
+ */
+function errorCode(error: unknown): string | null {
+  for (let current: unknown = error, depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== 'object' || current === null) {
+      break;
+    }
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,40}$/.test(code)) {
+      return code;
+    }
+    current = cause;
   }
-  const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
-  const detail = cause instanceof Error ? cause.message : String(cause);
-  return new NetworkError(request, `network error: ${detail}`, false, { cause: error });
+  return null;
 }
 
 interface CacheEntry {

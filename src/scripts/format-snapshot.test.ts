@@ -65,13 +65,17 @@ describe('formatCollection', () => {
         search: null,
       },
       retryAt: null,
+      refreshed: ['octo-org/gadgets', 'octo-org/widgets'],
       notRefreshed: ['octo-org/gone'],
+      discovery: { ownRepositories: 'complete', myPullRequests: 'partial' },
+      watchListComplete: false,
     };
 
     expect(formatCollection(result)).toBe(
       [
         'GitHub Actions of octocat — 2026-11-13 12:00Z',
         '! octo-org/gone: Not found.',
+        '! Incomplete watch list: your repositories complete, your pull requests partial.',
         '',
         'octo-org/gadgets  (own)',
         '  [in_progress, latest commit failure] main  2026-11-13 11:00Z  Commit title - Mona Lisa',

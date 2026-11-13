@@ -4,7 +4,7 @@ import type { PullRequestInput, RepositoryInput, WorkflowRunInput } from '../cor
 import { nameKey, sameName } from '../core/repository-name.ts';
 import type { Problem, Snapshot } from '../core/snapshot.ts';
 import { resolveWatchList, type WatchedRepository } from '../core/watch-list.ts';
-import type { GitHubClient, RateLimitStatus } from './client.ts';
+import type { GitHubClient, Page, Parser, Query, RateLimitStatus } from './client.ts';
 import { GitHubError, NotFoundError, RateLimitError } from './errors.ts';
 import {
   parsePullRequestDetails,
@@ -24,6 +24,8 @@ export const RECENT_RUNS = 100;
 export const REF_RUNS = 30;
 /** Pages of open pull requests fetched per watched repository (100 per page). */
 export const PULL_REQUEST_PAGES = 3;
+/** Pages read from the repository list and from the search (100 per page). */
+export const DISCOVERY_PAGES = 10;
 /** Repositories collected at the same time. GitHub recommends serial requests; a few is fine. */
 export const DEFAULT_CONCURRENCY = 4;
 
@@ -36,7 +38,29 @@ export interface CollectOptions {
   readonly signal?: AbortSignal;
 }
 
-/** A snapshot, and what it cost. */
+/**
+ * How completely a discovery source was read:
+ * - `complete`: every page that matters was read;
+ * - `partial`: some pages were read, but a later page failed, the page cap was reached, or the
+ *   search API reported `incomplete_results`; what was read is used;
+ * - `failed`: nothing could be read;
+ * - `skipped`: the configuration turns the source off.
+ */
+export type DiscoveryState = 'complete' | 'partial' | 'failed' | 'skipped';
+
+/**
+ * A snapshot, what it cost, and how far it can be trusted.
+ *
+ * Every watched repository is in exactly one of {@link refreshed} and {@link notRefreshed}. A
+ * caller keeping a published state should merge each collection into it repository by
+ * repository (names compared case-insensitively):
+ *
+ * 1. in `refreshed`: take this snapshot's view of it; absent from `snapshot.repositories` means
+ *    it has no line to show any more;
+ * 2. in `notRefreshed`: keep the previous view; with none, use this snapshot's view if it has one;
+ * 3. in neither (no longer watched, as far as this collection can tell): drop it only if
+ *    {@link watchListComplete}; otherwise keep the previous view.
+ */
 export interface CollectionResult {
   readonly snapshot: Snapshot;
   /** Requests this collection sent, of which `notModified` were free `304`s. */
@@ -49,11 +73,28 @@ export interface CollectionResult {
   /** Set when a rate limit was hit: send nothing before this time. */
   readonly retryAt: Date | null;
   /**
-   * Watched repositories missing from the snapshot because they could not be read (see
-   * `snapshot.problems`) or were not reached before a rate limit. The caller may keep showing
-   * their previous state.
+   * Watched repositories read completely: their view in `snapshot.repositories` (or its absence)
+   * is authoritative. Named as GitHub does (the snapshot's names), sorted.
+   */
+  readonly refreshed: readonly string[];
+  /**
+   * Watched repositories whose view is missing or may be incomplete: they could not be read (see
+   * `snapshot.problems`), were cut off by a rate limit, or are shown only because of a search
+   * that was not complete. Named as resolved from the configuration and discovery, sorted.
    */
   readonly notRefreshed: readonly string[];
+  /** How completely the sources of the watch list were read. */
+  readonly discovery: {
+    /** The viewer's repositories (`GET /user/repos`). */
+    readonly ownRepositories: DiscoveryState;
+    /** The viewer's open pull requests (the search API). */
+    readonly myPullRequests: DiscoveryState;
+  };
+  /**
+   * Whether every enabled source was read completely, so that a repository missing from this
+   * collection's watch list is really no longer watched.
+   */
+  readonly watchListComplete: boolean;
 }
 
 /** The viewer's login never changes for a given token: fetched once per client. */
@@ -65,12 +106,16 @@ const viewers = new WeakMap<GitHubClient, string>();
  * 1. the viewer (once per client), their own repositories and their open pull requests;
  * 2. the watch list ({@link resolveWatchList});
  * 3. per repository, with bounded concurrency: for a repository the viewer owns or maintains,
- *    the most recent runs and every open pull request; for a repository present only because of
- *    the viewer's pull requests, those pull requests and the runs of their head commits.
+ *    the most recent runs and the open pull requests (the viewer's always included); for a
+ *    repository present only because of the viewer's pull requests, those pull requests and the
+ *    runs of their head commits.
  *
- * Failures are isolated: a repository that cannot be read becomes a problem on the snapshot. A
- * rate limit stops the collection but still returns what was collected, with a `rate_limited`
- * problem and {@link CollectionResult.retryAt}. Only a failure to identify the viewer throws.
+ * Failures are isolated: a repository that cannot be read becomes a problem on the snapshot, and
+ * a source of the watch list that fails is reported in {@link CollectionResult.discovery}. Once a
+ * rate limit is hit, no further request is sent (requests already sent may complete; only an
+ * exhausted search quota leaves the other requests going); what was collected is still returned,
+ * with a `rate_limited` problem and {@link CollectionResult.retryAt}. Only a failure to identify
+ * the viewer throws.
  */
 export async function collectSnapshot(
   client: GitHubClient,
@@ -80,98 +125,70 @@ export async function collectSnapshot(
   const before = client.stats;
   const { now, signal } = options;
   const problems: Problem[] = [];
-  let rateLimit: RateLimitError | null = null;
-
-  /** Runs `task`; a GitHub failure is recorded and yields `fallback`. Other errors propagate. */
-  const attempt = async <T>(
-    task: () => Promise<T>,
-    onFailure: (error: GitHubError) => void,
-    fallback: T,
-  ): Promise<T> => {
-    try {
-      return await task();
-    } catch (error) {
-      if (error instanceof RateLimitError) {
-        if (rateLimit === null || error.retryAt > rateLimit.retryAt) {
-          rateLimit = error;
-        }
-        return fallback;
-      }
-      if (error instanceof GitHubError) {
-        onFailure(error);
-        return fallback;
-      }
-      throw error;
-    }
-  };
 
   const viewer = await getViewer(client, signal);
+  const api = new GatedApi(client, signal);
 
-  const [ownRepositories, myPullRequests] = await Promise.all([
+  const [own, mine] = await Promise.all([
     config.includeOwnRepositories
-      ? attempt(
-          () => listOwnRepositories(client, config, now, signal),
-          (error) => problems.push(other(`Could not list your repositories: ${error.message}`)),
-          [],
-        )
-      : [],
+      ? listOwnRepositories(api, config, now, problems)
+      : skipped<RepositoryInfo>(),
     config.includeMyPullRequests
-      ? attempt(
-          () => searchOpenPullRequests(client, viewer, problems, signal),
-          (error) => problems.push(other(`Could not search your pull requests: ${error.message}`)),
-          [],
-        )
-      : [],
+      ? searchOpenPullRequests(api, viewer, problems)
+      : skipped<PullRequestReference>(),
   ]);
 
   const watchList = resolveWatchList(
     config,
     {
-      ownRepositories,
-      pullRequestRepositories: myPullRequests.map((reference) => reference.repository),
+      ownRepositories: own.items,
+      pullRequestRepositories: mine.items.map((reference) => reference.repository),
     },
     now,
   );
-  const known = new Map(ownRepositories.map((info) => [nameKey(info.fullName), info]));
+  const known = new Map(own.items.map((info) => [nameKey(info.fullName), info]));
+  const searchComplete = mine.state === 'complete' || mine.state === 'skipped';
 
+  const refreshed: string[] = [];
   const notRefreshed: string[] = [];
-  let skipped = 0;
+  let cutOff = 0;
   const repositories = await mapWithConcurrency(
     watchList,
     options.concurrency ?? DEFAULT_CONCURRENCY,
     async (entry): Promise<RepositoryInput | null> => {
-      if (rateLimit !== null) {
-        skipped += 1;
+      const references = mine.items.filter((reference) =>
+        sameName(reference.repository, entry.fullName),
+      );
+      try {
+        api.throwIfStopped();
+        const input = isWatched(entry)
+          ? await collectWatchedRepository(api, entry, known, viewer, references)
+          : await collectPullRequestRepository(api, entry, references);
+        if (isWatched(entry) || searchComplete) {
+          refreshed.push(input.fullName);
+        } else {
+          notRefreshed.push(entry.fullName);
+        }
+        return input;
+      } catch (error) {
+        if (error instanceof RateLimitError) {
+          cutOff += 1;
+        } else if (error instanceof GitHubError) {
+          problems.push(repositoryProblem(entry.fullName, error));
+        } else {
+          throw error;
+        }
         notRefreshed.push(entry.fullName);
         return null;
       }
-      const result = await attempt<RepositoryInput | null>(
-        () =>
-          isWatched(entry)
-            ? collectWatchedRepository(client, entry, known, viewer, signal)
-            : collectPullRequestRepository(
-                client,
-                entry,
-                myPullRequests.filter((reference) =>
-                  sameName(reference.repository, entry.fullName),
-                ),
-                signal,
-              ),
-        (error) => problems.push(repositoryProblem(entry.fullName, error)),
-        null,
-      );
-      if (result === null) {
-        notRefreshed.push(entry.fullName);
-      }
-      return result;
     },
   );
 
-  const limited = rateLimit as RateLimitError | null;
+  const limited = api.rateLimit;
   if (limited !== null) {
     const unreached =
-      skipped > 0
-        ? `; ${String(skipped)} of ${String(watchList.length)} repositories were not refreshed`
+      cutOff > 0
+        ? `; ${String(cutOff)} of ${String(watchList.length)} repositories were not refreshed`
         : '';
     problems.push({
       kind: 'rate_limited',
@@ -195,6 +212,7 @@ export async function collectSnapshot(
     { now, recentWindowHours: config.recentWindowHours },
   );
   const after = client.stats;
+  const complete = (state: DiscoveryState): boolean => state === 'complete' || state === 'skipped';
   return {
     snapshot,
     requests: {
@@ -203,76 +221,212 @@ export async function collectSnapshot(
     },
     rateLimits: { core, search: client.rateLimit('search') },
     retryAt: limited?.retryAt ?? null,
+    refreshed: refreshed.sort(),
     notRefreshed: notRefreshed.sort(),
+    discovery: { ownRepositories: own.state, myPullRequests: mine.state },
+    watchListComplete: complete(own.state) && complete(mine.state),
   };
+}
+
+/**
+ * The client as the collector uses it, for one collection: no request (and no further page) is
+ * sent once a rate limit was hit. Requests already sent are left to complete.
+ */
+class GatedApi {
+  readonly #client: GitHubClient;
+  readonly #signal: AbortSignal | undefined;
+  /** The rate limit that stops every request; an exhausted search quota stops only the search. */
+  #stop: RateLimitError | null = null;
+  /** The rate limit with the latest retry time, stopping or not. */
+  #latest: RateLimitError | null = null;
+
+  constructor(client: GitHubClient, signal: AbortSignal | undefined) {
+    this.#client = client;
+    this.#signal = signal;
+  }
+
+  get rateLimit(): RateLimitError | null {
+    return this.#latest;
+  }
+
+  /** Throws the rate limit that stopped the collection, if any. */
+  throwIfStopped(): void {
+    if (this.#stop !== null) {
+      throw this.#stop;
+    }
+  }
+
+  async get<T>(path: string, query: Query, parse: Parser<T>): Promise<T> {
+    this.throwIfStopped();
+    try {
+      return await this.#client.get(path, query, parse, this.#options());
+    } catch (error) {
+      throw this.#noted(error);
+    }
+  }
+
+  async *pages<T>(
+    path: string,
+    query: Query,
+    parse: Parser<T>,
+    maxPages: number,
+  ): AsyncGenerator<Page<T>, void, undefined> {
+    // The client fetches a page only when asked for it: checking before each `next()` gates
+    // every page.
+    const pages = this.#client.pages(path, query, parse, { maxPages, ...this.#options() });
+    try {
+      for (;;) {
+        this.throwIfStopped();
+        let result: IteratorResult<Page<T>, void>;
+        try {
+          result = await pages.next();
+        } catch (error) {
+          throw this.#noted(error);
+        }
+        if (result.done === true) {
+          return;
+        }
+        yield result.value;
+      }
+    } finally {
+      await pages.return(undefined);
+    }
+  }
+
+  #noted(error: unknown): unknown {
+    if (error instanceof RateLimitError) {
+      if (this.#latest === null || error.retryAt > this.#latest.retryAt) {
+        this.#latest = error;
+      }
+      const searchQuotaOnly = error.kind === 'primary' && error.resource === 'search';
+      if (!searchQuotaOnly) {
+        this.#stop ??= error;
+      }
+    }
+    return error;
+  }
+
+  #options(): { signal?: AbortSignal } {
+    return this.#signal ? { signal: this.#signal } : {};
+  }
 }
 
 async function getViewer(client: GitHubClient, signal: AbortSignal | undefined): Promise<string> {
   let viewer = viewers.get(client);
   if (viewer === undefined) {
-    viewer = await client.get('/user', {}, parseViewer, optional(signal));
+    viewer = await client.get('/user', {}, parseViewer, signal ? { signal } : {});
     viewers.set(client, viewer);
   }
   return viewer;
+}
+
+/** What a discovery source yielded, and how completely it was read. */
+interface Discovered<T> {
+  readonly items: T[];
+  readonly state: DiscoveryState;
+}
+
+function skipped<T>(): Discovered<T> {
+  return { items: [], state: 'skipped' };
+}
+
+/**
+ * Reads the pages of a discovery source, keeping every page read before a failure. `read` takes a
+ * page's items and returns true once nothing further is needed (the source is then complete). A
+ * GitHub failure becomes a problem (a rate limit is reported by the caller); others propagate.
+ */
+async function discover<P, T>(
+  pages: AsyncIterable<Page<P>>,
+  read: (page: Page<P>, items: T[]) => boolean,
+  describeFailure: (error: GitHubError) => string,
+  problems: Problem[],
+): Promise<Discovered<T>> {
+  const items: T[] = [];
+  let pagesRead = 0;
+  let complete = false;
+  try {
+    for await (const page of pages) {
+      pagesRead += 1;
+      if (read(page, items) || !page.hasNext) {
+        complete = true;
+        break;
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof GitHubError)) {
+      throw error;
+    }
+    if (!(error instanceof RateLimitError)) {
+      problems.push(other(describeFailure(error)));
+    }
+  }
+  return { items, state: complete ? 'complete' : pagesRead > 0 ? 'partial' : 'failed' };
 }
 
 /**
  * The viewer's repositories that are neither archived nor disabled, most recently pushed first.
  * With a push window, pagination stops at the first page that reaches past it.
  */
-async function listOwnRepositories(
-  client: GitHubClient,
+function listOwnRepositories(
+  api: GatedApi,
   config: Config,
   now: Date,
-  signal: AbortSignal | undefined,
-): Promise<RepositoryInfo[]> {
+  problems: Problem[],
+): Promise<Discovered<RepositoryInfo>> {
   const days = config.ownRepositoriesPushedWithinDays;
   const pushedSince = days === null ? null : now.getTime() - days * 86_400_000;
-  const repositories: RepositoryInfo[] = [];
-  const pages = client.pages(
-    '/user/repos',
-    { affiliation: 'owner', sort: 'pushed', direction: 'desc', per_page: 100 },
-    parseRepositoryList,
-    { maxPages: 10, ...optional(signal) },
-  );
-  for await (const page of pages) {
-    repositories.push(...page.data.filter((repository) => !repository.inactive));
-    const pastWindow =
-      pushedSince !== null &&
-      page.data.some(
-        (repository) =>
-          repository.pushedAt === null || Date.parse(repository.pushedAt) < pushedSince,
+  return discover<RepositoryInfo[], RepositoryInfo>(
+    api.pages(
+      '/user/repos',
+      { affiliation: 'owner', sort: 'pushed', direction: 'desc', per_page: 100 },
+      parseRepositoryList,
+      DISCOVERY_PAGES,
+    ),
+    (page, repositories) => {
+      repositories.push(...page.data.filter((repository) => !repository.inactive));
+      return (
+        pushedSince !== null &&
+        page.data.some(
+          (repository) =>
+            repository.pushedAt === null || Date.parse(repository.pushedAt) < pushedSince,
+        )
       );
-    if (pastWindow) {
-      break;
-    }
-  }
-  return repositories;
+    },
+    (error) => `Could not list your repositories: ${error.message}`,
+    problems,
+  );
 }
 
-/** The viewer's open pull requests in non-archived repositories, through the search API. */
+/**
+ * The viewer's open pull requests in non-archived repositories, through the search API. A search
+ * that GitHub reports as incomplete is `partial`.
+ */
 async function searchOpenPullRequests(
-  client: GitHubClient,
+  api: GatedApi,
   viewer: string,
   problems: Problem[],
-  signal: AbortSignal | undefined,
-): Promise<PullRequestReference[]> {
-  const references: PullRequestReference[] = [];
-  const pages = client.pages(
-    '/search/issues',
-    { q: `is:pr is:open archived:false author:${viewer}`, per_page: 100 },
-    parsePullRequestSearch,
-    { maxPages: 10, ...optional(signal) },
+): Promise<Discovered<PullRequestReference>> {
+  const search = { incomplete: false };
+  const result = await discover<ReturnType<typeof parsePullRequestSearch>, PullRequestReference>(
+    api.pages(
+      '/search/issues',
+      { q: `is:pr is:open archived:false author:${viewer}`, per_page: 100 },
+      parsePullRequestSearch,
+      DISCOVERY_PAGES,
+    ),
+    (page, references) => {
+      references.push(...page.data.pullRequests);
+      search.incomplete ||= page.data.incomplete;
+      return false;
+    },
+    (error) => `Could not search your pull requests: ${error.message}`,
+    problems,
   );
-  let incomplete = false;
-  for await (const page of pages) {
-    references.push(...page.data.pullRequests);
-    incomplete ||= page.data.incomplete;
-  }
-  if (incomplete) {
+  if (search.incomplete) {
     problems.push(other('GitHub search timed out: some of your pull requests may be missing.'));
+    return { items: result.items, state: result.state === 'failed' ? 'failed' : 'partial' };
   }
-  return references;
+  return result;
 }
 
 function isWatched(entry: WatchedRepository): boolean {
@@ -280,39 +434,56 @@ function isWatched(entry: WatchedRepository): boolean {
 }
 
 /**
- * A repository the viewer owns or maintains: its most recent runs and all its open pull
- * requests. When the recent page is full, the default branch and the viewer's pull requests may
- * have runs older than it; each of them without a run in the page gets its own small request, so
- * that their lines (always shown) do not vanish in a busy repository.
+ * A repository the viewer owns or maintains: its most recent runs and its open pull requests (up
+ * to {@link PULL_REQUEST_PAGES} pages). The viewer's pull requests known from the search but cut
+ * off by that cap are fetched one by one. When the recent page of runs is full, the default
+ * branch and the viewer's pull requests may have runs older than it; each of them without a run
+ * in the page gets its own small request, so that their lines (always shown) do not vanish in a
+ * busy repository.
  */
 async function collectWatchedRepository(
-  client: GitHubClient,
+  api: GatedApi,
   entry: WatchedRepository,
   known: ReadonlyMap<string, RepositoryInfo>,
   viewer: string,
-  signal: AbortSignal | undefined,
+  references: readonly PullRequestReference[],
 ): Promise<RepositoryInput> {
   const info =
     known.get(nameKey(entry.fullName)) ??
-    (await client.get(repositoryPath(entry.fullName), {}, parseRepository, optional(signal)));
+    (await api.get(repositoryPath(entry.fullName), {}, parseRepository));
   const path = repositoryPath(info.fullName);
 
-  const runs = await client.get(
+  const runs = await api.get(
     `${path}/actions/runs`,
     { per_page: RECENT_RUNS },
     parseWorkflowRunList,
-    optional(signal),
   );
   const pullRequests: PullRequestInput[] = [];
+  let truncated = false;
   if (info.hasPullRequests) {
-    const pages = client.pages(
+    const pages = api.pages(
       `${path}/pulls`,
       { state: 'open', per_page: 100 },
       parsePullRequestList,
-      { maxPages: PULL_REQUEST_PAGES, ...optional(signal) },
+      PULL_REQUEST_PAGES,
     );
     for await (const page of pages) {
       pullRequests.push(...page.data);
+      truncated = page.hasNext;
+    }
+  }
+  if (truncated) {
+    for (const reference of references) {
+      if (!pullRequests.some((pullRequest) => pullRequest.number === reference.number)) {
+        const details = await api.get(
+          `${path}/pulls/${String(reference.number)}`,
+          {},
+          parsePullRequestDetails,
+        );
+        if (details.open) {
+          pullRequests.push(details.pullRequest);
+        }
+      }
     }
   }
 
@@ -322,11 +493,10 @@ async function collectWatchedRepository(
       sameName(run.headRepository, info.fullName) && run.headBranch === info.defaultBranch;
     if (!runs.some(onDefaultBranch)) {
       extraRuns.push(
-        ...(await client.get(
+        ...(await api.get(
           `${path}/actions/runs`,
           { branch: info.defaultBranch, per_page: REF_RUNS },
           parseWorkflowRunList,
-          optional(signal),
         )),
       );
     }
@@ -335,7 +505,7 @@ async function collectWatchedRepository(
         sameName(pullRequest.author, viewer) &&
         !runs.some((run) => run.headSha === pullRequest.headSha)
       ) {
-        extraRuns.push(...(await headCommitRuns(client, path, pullRequest, signal)));
+        extraRuns.push(...(await headCommitRuns(api, path, pullRequest)));
       }
     }
   }
@@ -356,35 +526,31 @@ async function collectWatchedRepository(
  * search index was updated are left out.
  */
 async function collectPullRequestRepository(
-  client: GitHubClient,
+  api: GatedApi,
   entry: WatchedRepository,
   references: readonly PullRequestReference[],
-  signal: AbortSignal | undefined,
-): Promise<RepositoryInput | null> {
+): Promise<RepositoryInput> {
   const path = repositoryPath(entry.fullName);
   let info: RepositoryInfo | null = null;
   const pullRequests: PullRequestInput[] = [];
   const runs: WorkflowRunInput[] = [];
   for (const reference of references) {
-    const details = await client.get(
+    const details = await api.get(
       `${path}/pulls/${String(reference.number)}`,
       {},
       parsePullRequestDetails,
-      optional(signal),
     );
     info ??= details.repository;
     if (details.open) {
       pullRequests.push(details.pullRequest);
-      runs.push(...(await headCommitRuns(client, path, details.pullRequest, signal)));
+      runs.push(...(await headCommitRuns(api, path, details.pullRequest)));
     }
   }
-  if (info === null) {
-    return null;
-  }
   return {
-    fullName: info.fullName,
-    url: info.url,
-    defaultBranch: info.defaultBranch,
+    // The watch list has an entry here only because of a search reference, so `info` is set.
+    fullName: info?.fullName ?? entry.fullName,
+    url: info?.url ?? `https://github.com/${entry.fullName}`,
+    defaultBranch: info?.defaultBranch ?? '',
     reasons: entry.reasons,
     runs,
     pullRequests,
@@ -392,16 +558,14 @@ async function collectPullRequestRepository(
 }
 
 function headCommitRuns(
-  client: GitHubClient,
+  api: GatedApi,
   path: string,
   pullRequest: PullRequestInput,
-  signal: AbortSignal | undefined,
 ): Promise<WorkflowRunInput[]> {
-  return client.get(
+  return api.get(
     `${path}/actions/runs`,
     { head_sha: pullRequest.headSha, per_page: REF_RUNS },
     parseWorkflowRunList,
-    optional(signal),
   );
 }
 
@@ -420,11 +584,6 @@ function repositoryProblem(repository: string, error: GitHubError): Problem {
 
 function other(message: string): Problem {
   return { kind: 'other', message };
-}
-
-/** `{ signal }` when there is one (the options are `exactOptionalPropertyTypes`). */
-function optional(signal: AbortSignal | undefined): { signal?: AbortSignal } {
-  return signal ? { signal } : {};
 }
 
 /** Maps `items` with at most `limit` calls of `fn` in flight; results keep the input order. */

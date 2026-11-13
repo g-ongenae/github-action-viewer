@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveToken, TokenNotFoundError } from './token.ts';
+import { MalformedTokenError } from './errors.ts';
+import { GH_AUTH_TOKEN_TIMEOUT_MS, resolveToken, TokenNotFoundError } from './token.ts';
 
 const fromGh = (token: string) => vi.fn(() => Promise.resolve(token));
 
 describe('resolveToken', () => {
+  it('gives gh a forgiving timeout', () => {
+    expect(GH_AUTH_TOKEN_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
+  });
+
   it('prefers GITHUB_TOKEN', async () => {
     const ghAuthToken = fromGh('gh');
 
@@ -36,6 +41,18 @@ describe('resolveToken', () => {
     await expect(promise).rejects.toThrow(TokenNotFoundError);
     await expect(promise).rejects.toThrow(/GITHUB_TOKEN/);
     await expect(promise).rejects.toThrow(hint);
+  });
+
+  it.each([
+    [{ GITHUB_TOKEN: 'ghp_abc\ndef' }, undefined, 'GITHUB_TOKEN'],
+    [{ GH_TOKEN: 'ghp_abc def' }, undefined, 'GH_TOKEN'],
+    [{}, 'ghp_\u0007abc\n', 'The output of `gh auth token`'],
+  ])('rejects a malformed token without quoting it (%j)', async (env, ghOutput, source) => {
+    const promise = resolveToken({ env, ghAuthToken: fromGh(ghOutput ?? 'unused') });
+
+    await expect(promise).rejects.toThrow(MalformedTokenError);
+    await expect(promise).rejects.toThrow(`${source} is malformed`);
+    await expect(promise).rejects.not.toThrow(/abc/);
   });
 
   it('rejects an empty output of gh', async () => {
