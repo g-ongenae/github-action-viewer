@@ -136,8 +136,10 @@ export class ConfigFile {
   }
 
   /**
-   * Re-reads the file periodically. A change is applied once two reads in a row agree, so that a
-   * file caught while an editor is writing it is never reported as invalid.
+   * Re-reads the file periodically. A change is applied once two reads in a row agree, which
+   * filters out most files caught while an editor is writing them. It is a debounce, not a
+   * guarantee: a half-written file that stays unchanged across two reads is still reported (or
+   * applied, if it happens to be valid). Editors that save atomically never expose one.
    */
   watch(): void {
     if (this.#watching) {
