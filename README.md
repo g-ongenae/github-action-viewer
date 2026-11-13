@@ -32,21 +32,27 @@ for `recentWindowHours` after they finish.
 
 ## Development
 
-Requirements: Node.js 24 (`engines.node` in [`package.json`](package.json), also read by CI) and npm.
+Requirements:
+
+- Node.js 26: the version CI uses is in [`.node-version`](.node-version), which `fnm use` /
+  `nvm use` also read. `package.json#engines` accepts `^26.0.0`, and `pnpm install` refuses other
+  versions.
+- pnpm 12: the exact version is pinned in `package.json#packageManager`. Any recent pnpm switches
+  to it automatically.
 
 ```sh
-npm ci          # install dependencies from the lockfile
-npm run check   # run every gate CI runs
+pnpm install    # install dependencies from the lockfile
+pnpm run check  # run every gate CI runs
 ```
 
-| Script                  | What it does                                           |
-| ----------------------- | ------------------------------------------------------ |
-| `npm run build`         | Compile `src/` to `dist/` with `tsc`                   |
-| `npm run typecheck`     | Type-check sources, tests and config files             |
-| `npm run lint`          | ESLint (type-aware); `lint:fix` applies safe fixes     |
-| `npm run format`        | Format everything with Prettier                        |
-| `npm run format:check`  | Fail if a file is not Prettier-formatted               |
-| `npm test`              | Run the Vitest suite once                              |
-| `npm run test:watch`    | Run Vitest in watch mode                               |
-| `npm run test:coverage` | Run the tests with V8 coverage (report in `coverage/`) |
-| `npm run check`         | `format:check`, `lint`, `typecheck`, `test`, `build`   |
+| Script               | What it does                                           |
+| -------------------- | ------------------------------------------------------ |
+| `pnpm build`         | Compile `src/` to `dist/` with `tsc`                   |
+| `pnpm typecheck`     | Type-check sources, tests and config files             |
+| `pnpm lint`          | ESLint (type-aware); `lint:fix` applies safe fixes     |
+| `pnpm format`        | Format everything with Prettier                        |
+| `pnpm format:check`  | Fail if a file is not Prettier-formatted               |
+| `pnpm test`          | Run the Vitest suite once                              |
+| `pnpm test:watch`    | Run Vitest in watch mode                               |
+| `pnpm test:coverage` | Run the tests with V8 coverage (report in `coverage/`) |
+| `pnpm check`         | `format:check`, `lint`, `typecheck`, `test`, `build`   |
