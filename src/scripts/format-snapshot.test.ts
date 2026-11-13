@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { buildSnapshot } from '../core/build-snapshot.ts';
 import { pullRequest, repository, run } from '../core/test-fixtures.ts';
 import type { CollectionResult } from '../github/collect.ts';
-import { formatCollection } from './format-snapshot.ts';
+import { MalformedTokenError, NotFoundError } from '../github/errors.ts';
+import { TokenNotFoundError } from '../github/token.ts';
+import { describeFailure, formatCollection, ScriptError } from './format-snapshot.ts';
 
 const NOW = new Date('2026-11-13T12:00:00Z');
 
@@ -87,5 +89,23 @@ describe('formatCollection', () => {
         '10 requests (8 not modified, 2 counted) · core 4990/5000 left until 2026-11-13 12:00Z',
       ].join('\n'),
     );
+  });
+});
+
+describe('describeFailure', () => {
+  it('prints the messages of this project’s own errors', () => {
+    expect(describeFailure(new NotFoundError('GET /user', 404, '404 Not Found'))).toBe(
+      'GET /user: 404 Not Found',
+    );
+    expect(describeFailure(new MalformedTokenError('GH_TOKEN'))).toMatch(/^GH_TOKEN is malformed/);
+    expect(describeFailure(new TokenNotFoundError('it timed out'))).toMatch(/^No GitHub token/);
+    expect(describeFailure(new ScriptError('Invalid config.json'))).toBe('Invalid config.json');
+  });
+
+  it('does not print the message of any other error, which could quote data', () => {
+    const error = new SyntaxError('Unexpected token in "secret-value"');
+
+    expect(describeFailure(error)).toBe('Unexpected error (SyntaxError).');
+    expect(describeFailure('secret-value')).toBe('Unexpected error.');
   });
 });

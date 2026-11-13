@@ -8,7 +8,7 @@ import { DEFAULT_CONFIG, formatConfigIssues, parseConfig, type Config } from '..
 import { GitHubClient } from '../github/client.ts';
 import { collectSnapshot } from '../github/collect.ts';
 import { resolveToken } from '../github/token.ts';
-import { formatCollection } from './format-snapshot.ts';
+import { describeFailure, formatCollection, ScriptError } from './format-snapshot.ts';
 
 const CONFIG_FILE = new URL('../../config.json', import.meta.url);
 
@@ -20,11 +20,17 @@ async function readConfig(): Promise<Config> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return DEFAULT_CONFIG;
     }
-    throw error;
+    throw new ScriptError('Could not read config.json.');
   }
-  const result = parseConfig(JSON.parse(text));
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new ScriptError('config.json is not valid JSON.');
+  }
+  const result = parseConfig(json);
   if (!result.ok) {
-    throw new Error(`Invalid config.json:\n${formatConfigIssues(result.issues)}`);
+    throw new ScriptError(`Invalid config.json:\n${formatConfigIssues(result.issues)}`);
   }
   return result.config;
 }
@@ -44,6 +50,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${describeFailure(error)}\n`);
   process.exitCode = 1;
 });
