@@ -308,7 +308,8 @@ function stateOf(run: WorkflowRunInput): ReturnType<typeof normaliseRunState> {
 
 // --- Ordering. Every comparator ends on a unique key so that sorting is fully deterministic. ---
 
-function compareRepositories(a: RepositoryView, b: RepositoryView): number {
+/** Display order of repositories (see {@link buildSnapshot}); exported to merge snapshots. */
+export function compareRepositories(a: RepositoryView, b: RepositoryView): number {
   return (
     Number(b.active) - Number(a.active) ||
     compareDates(newestLineDate(b), newestLineDate(a)) ||
@@ -321,7 +322,8 @@ function newestLineDate(repository: RepositoryView): string {
   return latest(repository.lines.map((line) => line.date));
 }
 
-function compareLines(a: LineView, b: LineView): number {
+/** Display order of the lines of a repository (see {@link buildRepositoryView}). */
+export function compareLines(a: LineView, b: LineView): number {
   return (
     Number(b.kind === 'default_branch') - Number(a.kind === 'default_branch') ||
     compareDates(b.date, a.date) ||
