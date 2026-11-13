@@ -1,6 +1,6 @@
 {
   // Node project: server-side sources, their tests and the tooling config files.
-  // Used by `npm run typecheck`, ESLint and editors. Browser code under src/web/ gets its own
+  // Used by `pnpm run typecheck`, ESLint and editors. Browser code under src/web/ gets its own
   // tsconfig (DOM lib, no Node types) and is excluded here.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
