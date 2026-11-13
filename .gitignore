@@ -6,3 +6,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Local user configuration (repositories to watch, etc.)
+/config.json
