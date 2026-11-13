@@ -1,0 +1,719 @@
+/*
+ * My GitHub Actions: one calm column that reads like a list. System fonts, fixed columns so that
+ * states, refs and dates line up down the page, light and dark palettes designed separately.
+ * No inline styles anywhere (the CSP forbids them): state is expressed with classes.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f6f3;
+  --text: #1c2024;
+  --muted: #586069;
+  --faint: #8b9198;
+  --rule: #e2e3df;
+  --hover: #ecece8;
+  --focus: #2563eb;
+  --code-bg: #e9e9e4;
+
+  --active: #1b5fc1;
+  --success: #17773f;
+  --failure: #b8261f;
+  --attention: #8a5a00;
+  --neutral: #586069;
+
+  --warning-bg: #fdf3dc;
+  --warning-rule: #d9a84a;
+  --info-bg: #e8f0fb;
+  --info-rule: #8fb0e3;
+
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', Menlo, Consolas, monospace;
+
+  /* Line columns: state, ref, date, then the commit takes the rest. */
+  --col-state: 9.5rem;
+  --col-ref: 8.5rem;
+  --col-date: 5.75rem;
+  --col-gap: 0.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* A soft charcoal rather than black, with slightly desaturated state colours that keep
+       their contrast without glowing. */
+    --bg: #15171a;
+    --text: #e3e5e8;
+    --muted: #a0a7b0;
+    --faint: #6c737c;
+    --rule: #262a2f;
+    --hover: #1e2125;
+    --focus: #7aa7ff;
+    --code-bg: #24282d;
+
+    --active: #79a9f5;
+    --success: #5cc488;
+    --failure: #f0857c;
+    --attention: #e0b45c;
+    --neutral: #a0a7b0;
+
+    --warning-bg: #2a2416;
+    --warning-rule: #7a6125;
+    --info-bg: #182234;
+    --info-rule: #34507d;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 78rem;
+  padding: 1.25rem 16px 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    0.9375rem/1.45 system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Heading and status ---------------------------------------------------------------------- */
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 1.25rem;
+  row-gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.status > :not([hidden]) ~ :not([hidden])::before,
+.summary-part + .summary-part::before {
+  content: '·';
+  margin: 0 0.5em;
+  color: var(--faint);
+}
+
+.connection-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  background: var(--faint);
+  vertical-align: 0.05em;
+}
+
+.connection[data-state='live'] .connection-dot {
+  background: var(--success);
+}
+
+.connection[data-state='reconnecting'] .connection-dot {
+  background: var(--attention);
+}
+
+.connection[data-state='disconnected'] {
+  color: var(--failure);
+  font-weight: 600;
+}
+
+.connection[data-state='disconnected'] .connection-dot {
+  background: var(--failure);
+}
+
+.summary {
+  color: var(--text);
+}
+
+.summary-part {
+  font-weight: 600;
+}
+
+.summary-part.tone-active {
+  color: var(--active);
+}
+
+.summary-part.tone-failure {
+  color: var(--failure);
+}
+
+.summary-part.tone-attention {
+  color: var(--attention);
+}
+
+.summary-part.tone-muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* On narrow screens the summary gets a line of its own, without a dangling separator. */
+@media (max-width: 30rem) {
+  .status .summary {
+    flex-basis: 100%;
+  }
+
+  .status .summary::before {
+    content: none !important;
+  }
+}
+
+/* Notices ---------------------------------------------------------------------------------- */
+
+.notices {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.875rem;
+}
+
+.notice {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--warning-rule);
+  border-radius: 0 6px 6px 0;
+  background: var(--warning-bg);
+}
+
+.notice-info {
+  border-left-color: var(--info-rule);
+  background: var(--info-bg);
+}
+
+.notice-title {
+  margin: 0;
+}
+
+.notice-details {
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.notice-details.verbatim {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* Empty states ----------------------------------------------------------------------------- */
+
+.empty {
+  max-width: 40rem;
+  padding: 2rem 0;
+  color: var(--muted);
+}
+
+.empty p {
+  margin: 0 0 0.75rem;
+}
+
+.empty .empty-title {
+  color: var(--text);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+/* Repositories ----------------------------------------------------------------------------- */
+
+main {
+  container-type: inline-size;
+}
+
+.repository + .repository {
+  margin-top: 1.75rem;
+}
+
+.repository-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 1rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.repository-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.repository-name a {
+  text-decoration: none;
+}
+
+.repository-name a:hover {
+  text-decoration: underline;
+}
+
+.repository-stale {
+  margin: 0;
+  color: var(--attention);
+  font-size: 0.8125rem;
+}
+
+.repository-stale::before {
+  content: '◷ ';
+}
+
+.lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repository-is-stale .lines {
+  /* A dashed rule in the gutter, without shifting the columns. */
+  margin-left: calc(-0.5rem - 2px);
+  padding-left: 0.5rem;
+  border-left: 2px dashed var(--warning-rule);
+}
+
+.repository-is-stale .line-date {
+  font-style: italic;
+}
+
+/* Lines ------------------------------------------------------------------------------------ */
+
+.line {
+  border-bottom: 1px solid var(--rule);
+}
+
+.tone-active {
+  --tone: var(--active);
+}
+
+.tone-success {
+  --tone: var(--success);
+}
+
+.tone-failure {
+  --tone: var(--failure);
+}
+
+.tone-attention {
+  --tone: var(--attention);
+}
+
+.tone-muted {
+  --tone: var(--neutral);
+}
+
+.line-row {
+  display: grid;
+  grid-template-columns: var(--col-state) var(--col-ref) var(--col-date) minmax(0, 1fr);
+  grid-template-areas:
+    'state ref date text'
+    '. note note note';
+  column-gap: var(--col-gap);
+  align-items: center;
+}
+
+.line-toggle {
+  grid-area: state;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 2.5rem;
+  margin: 0;
+  padding: 0.25rem 0.35rem 0.25rem 0.1rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--tone);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.line-toggle:hover {
+  background: var(--hover);
+}
+
+.chevron {
+  flex: none;
+  width: 0.75rem;
+  color: var(--faint);
+  transition: transform 120ms ease;
+}
+
+.chevron::before {
+  content: '';
+  display: block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: 0.1rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.line-toggle[aria-expanded='true'] .chevron {
+  transform: rotate(90deg);
+}
+
+.state-label {
+  white-space: nowrap;
+}
+
+.line-ref a,
+.run-name a {
+  text-decoration: none;
+}
+
+.line-ref a:hover,
+.run-name a:hover {
+  text-decoration: underline;
+}
+
+.line-ref {
+  grid-area: ref;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line-date {
+  grid-area: date;
+  color: var(--muted);
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.line-text {
+  grid-area: text;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.line-title,
+.line-pr-title,
+.line-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The commit title keeps its width; the pull request title only fills what is left. */
+.line-title {
+  flex: 0 1 auto;
+}
+
+.line-pr-title {
+  flex: 1 1 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  /* Right-to-left text would otherwise align to the far end of the column. */
+  text-align: left;
+}
+
+.line-author {
+  flex: 0 0 auto;
+  text-align: right;
+  max-width: 11rem;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.line-pr-title:not([hidden]) + .line-author {
+  margin-left: 0;
+}
+
+.line-note {
+  grid-area: note;
+  margin: -0.35rem 0 0.4rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.note-part + .note-part::before {
+  content: '·';
+  margin: 0 0.45em;
+  color: var(--faint);
+}
+
+.note-part.tone-failure {
+  color: var(--failure);
+  font-weight: 600;
+}
+
+/* Expanded runs ---------------------------------------------------------------------------- */
+
+.line-panel {
+  margin: 0 0 0.75rem calc(var(--col-state) + var(--col-gap));
+  font-size: 0.875rem;
+}
+
+.panel-commit,
+.panel-pull-request {
+  margin: 0 0 0.3rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.panel-commit bdi:first-of-type {
+  color: var(--text);
+}
+
+.sha {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.runs {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px dotted var(--rule);
+}
+
+.run {
+  display: grid;
+  grid-template-columns: 8rem minmax(6rem, 16rem) 9rem 7.5rem var(--col-date) minmax(0, 1fr);
+  column-gap: var(--col-gap);
+  align-items: center;
+  min-height: 2rem;
+  border-bottom: 1px dotted var(--rule);
+}
+
+.run-state {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--tone);
+  font-weight: 600;
+}
+
+.run-name,
+.run-event,
+.run-commit {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-event,
+.run-number,
+.run-date,
+.run-commit {
+  color: var(--muted);
+}
+
+.run-event,
+.run-commit {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.run-number {
+  white-space: nowrap;
+}
+
+/* State icons ------------------------------------------------------------------------------ */
+
+.icon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.icon-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.icon-ring-dashed {
+  stroke-dasharray: 2.6 2;
+}
+
+.icon-ring-track {
+  stroke-opacity: 0.28;
+}
+
+.icon-glyph {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-glyph-filled {
+  fill: currentColor;
+  stroke: none;
+}
+
+.icon-in_progress .icon-glyph {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-in_progress .icon-glyph {
+    animation: none;
+  }
+
+  .chevron {
+    transition: none;
+  }
+}
+
+/* Narrow widths (a side panel, a phone): two rows per line ------------------------------- */
+
+@container (max-width: 44rem) {
+  .line-row {
+    grid-template-columns: var(--col-state) minmax(0, 1fr) auto;
+    grid-template-areas:
+      'state ref date'
+      'text text text'
+      'note note note';
+    column-gap: 0.5rem;
+  }
+
+  .line-text {
+    padding: 0 0 0.45rem 1.25rem;
+    margin-top: -0.3rem;
+  }
+
+  .line-pr-title {
+    display: none;
+  }
+
+  .line-author {
+    max-width: 40%;
+  }
+
+  .line-note {
+    margin: -0.25rem 0 0.45rem;
+    padding-left: 1.25rem;
+  }
+
+  .line-panel {
+    margin-left: 1.25rem;
+  }
+
+  .run {
+    grid-template-columns: 7.5rem minmax(0, 1fr) auto;
+    padding: 0.3rem 0;
+  }
+
+  .run-event,
+  .run-number,
+  .run-date,
+  .run-commit {
+    font-size: 0.8125rem;
+  }
+
+  .run-event {
+    grid-column: 2;
+  }
+
+  .run-date {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .run-number {
+    grid-column: 3;
+  }
+
+  .run-commit {
+    grid-column: 2 / 4;
+  }
+
+  .run-commit:empty {
+    display: none;
+  }
+}
