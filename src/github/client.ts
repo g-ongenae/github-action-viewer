@@ -69,6 +69,11 @@ export type Query = Readonly<Record<string, string | number | boolean>>;
 export interface RequestOptions {
   /** Aborts the request; its reason is rethrown as is. */
   readonly signal?: AbortSignal;
+  /**
+   * Called right before each request is sent, every redirect hop and page included; whatever it
+   * throws ends the call, as is. Unlike `signal`, it never interrupts a request already sent.
+   */
+  readonly gate?: () => void;
 }
 
 export interface PageOptions extends RequestOptions {
@@ -139,7 +144,7 @@ export class GitHubClient {
     parse: Parser<T>,
     options: RequestOptions = {},
   ): Promise<T> {
-    const response = await this.#request(apiUrl(path, query), parse, options.signal);
+    const response = await this.#request(apiUrl(path, query), parse, options);
     return response.data;
   }
 
@@ -156,7 +161,7 @@ export class GitHubClient {
     const maxPages = Math.min(Math.max(1, Math.floor(options.maxPages)), MAX_PAGES);
     let url: URL | null = apiUrl(path, query);
     for (let page = 1; url !== null && page <= maxPages; page += 1) {
-      const response = await this.#request(url, parse, options.signal);
+      const response = await this.#request(url, parse, options);
       const next = nextPageUrl(describeRequest(url), response.link);
       yield { data: response.data, hasNext: next !== null };
       url = next;
@@ -175,13 +180,16 @@ export class GitHubClient {
   async #request<T>(
     url: URL,
     parse: Parser<T>,
-    signal: AbortSignal | undefined,
+    options: RequestOptions,
   ): Promise<ParsedResponse<T>> {
     const request = describeRequest(url);
-    // Keyed by the URL asked for: after a redirect, the next request is conditional on every hop.
+    // Keyed by the URL asked for, but the validator only goes to the URL its body came from (the
+    // last hop of a redirect): validators need not be unique across resources.
     const cached = this.#cache.get(url.href);
+    const validatorFor = (target: URL): string | null =>
+      cached?.from === target.href ? cached.etag : null;
     let target = url;
-    let { response, text } = await this.#send(target, request, cached?.etag ?? null, signal);
+    let { response, text } = await this.#send(target, request, validatorFor(target), options);
     for (let hop = 1; isRedirect(response.status); hop += 1) {
       if (hop > MAX_REDIRECTS) {
         throw new HttpError(
@@ -191,10 +199,10 @@ export class GitHubClient {
         );
       }
       target = redirectTarget(request, response, target);
-      ({ response, text } = await this.#send(target, request, cached?.etag ?? null, signal));
+      ({ response, text } = await this.#send(target, request, validatorFor(target), options));
     }
 
-    if (response.status === 304 && cached) {
+    if (response.status === 304 && cached?.from === target.href) {
       this.#notModified += 1;
       return { data: parseBody(request, 304, cached.text, parse), link: cached.link };
     }
@@ -209,7 +217,7 @@ export class GitHubClient {
     if (etag === null) {
       this.#cache.delete(url.href);
     } else {
-      this.#cache.set(url.href, { etag, text, link });
+      this.#cache.set(url.href, { etag, text, link, from: target.href });
     }
     return { data, link };
   }
@@ -222,11 +230,13 @@ export class GitHubClient {
     url: URL,
     request: string,
     etag: string | null,
-    signal: AbortSignal | undefined,
+    options: RequestOptions,
   ): Promise<{ response: Response; text: string }> {
     if (!isApiUrl(url)) {
       throw new TypeError(`Refusing to send the token outside ${API_ORIGIN}`);
     }
+    options.gate?.();
+    const { signal } = options;
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${this.#token}`,
@@ -357,10 +367,9 @@ function parseBody<T>(request: string, status: number, text: string, parse: Pars
   let body: unknown;
   try {
     body = JSON.parse(text);
-  } catch (error) {
-    throw new UnexpectedPayloadError(request, status, 'response is not valid JSON', {
-      cause: error,
-    });
+  } catch {
+    // No cause: a JSON.parse error quotes the body.
+    throw new UnexpectedPayloadError(request, status, 'response is not valid JSON');
   }
   try {
     return parse(body);
@@ -438,6 +447,8 @@ interface CacheEntry {
   /** Response body as received, re-parsed on each hit so callers never share objects. */
   readonly text: string;
   readonly link: string | null;
+  /** The URL the body was served from: the asked URL, or the last hop of its redirects. */
+  readonly from: string;
 }
 
 /** URL → last response with an ETag; least recently used first out, bounded in characters. */

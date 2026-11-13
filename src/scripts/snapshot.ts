@@ -8,7 +8,7 @@ import { GitHubClient } from '../github/client.ts';
 import { collectSnapshot } from '../github/collect.ts';
 import { resolveToken } from '../github/token.ts';
 import { configPath, readConfigFile } from '../server/config-file.ts';
-import { formatCollection } from './format-snapshot.ts';
+import { describeFailure, formatCollection, ScriptError } from './format-snapshot.ts';
 
 async function readConfig(path: string): Promise<Config> {
   const read = await readConfigFile(path);
@@ -18,7 +18,7 @@ async function readConfig(path: string): Promise<Config> {
     case 'ok':
       return read.config;
     case 'invalid':
-      throw new Error(`Invalid configuration in ${path}:\n${read.problems}`);
+      throw new ScriptError(`Invalid configuration in ${path}:\n${read.problems}`);
   }
 }
 
@@ -42,6 +42,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${describeFailure(error)}\n`);
   process.exitCode = 1;
 });
