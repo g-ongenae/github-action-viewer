@@ -556,8 +556,8 @@ main {
   display: grid;
   /* Every column but the state and the name can shrink, so the row never overflows its panel. */
   grid-template-columns:
-    8rem minmax(6rem, 16rem) minmax(0, 9rem) minmax(0, 7.5rem) minmax(4.5rem, var(--col-date))
-    minmax(0, 1fr);
+    8rem minmax(6rem, 12rem) minmax(0, 8.5rem) minmax(0, 7.5rem) minmax(4.5rem, var(--col-date))
+    minmax(0, 10rem);
   column-gap: var(--col-gap);
   align-items: center;
   min-height: 2rem;
@@ -572,8 +572,12 @@ main {
   font-weight: 600;
 }
 
+/* Every run cell stays inside its column: anything too long ends in an ellipsis, with the full
+   text in its tooltip. */
 .run-name,
 .run-event,
+.run-number,
+.run-date,
 .run-commit {
   min-width: 0;
   overflow: hidden;
@@ -592,10 +596,6 @@ main {
 .run-commit {
   font-family: var(--mono);
   font-size: 0.8125rem;
-}
-
-.run-number {
-  white-space: nowrap;
 }
 
 /* State icons ------------------------------------------------------------------------------ */
@@ -690,10 +690,11 @@ main {
   }
 }
 
-/* Expanded runs in a narrow panel: state, name and date, then event and number beneath. */
-@container runs (max-width: 40rem) {
+/* Expanded runs in a narrow panel: state, name and date, then event and number beneath. Above
+   56rem every desktop column has its full width ("#210 · attempt 2", "older commit 1a2b3c4"). */
+@container runs (max-width: 56rem) {
   .run {
-    grid-template-columns: 7.5rem minmax(0, 1fr) auto;
+    grid-template-columns: 8rem minmax(0, 1fr) auto;
     padding: 0.3rem 0;
   }
 

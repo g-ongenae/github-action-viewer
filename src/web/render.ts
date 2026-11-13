@@ -577,18 +577,20 @@ function updateRun(item: HTMLElement, run: RunView, repository: RepositoryView, 
     title: `${run.workflowName}: open the run on GitHub`,
   });
   setText(event, run.event);
-  setText(
-    number,
+  setAttribute(event, 'title', run.event);
+  const numberText =
     run.runAttempt > 1
       ? `#${String(run.runNumber)} · attempt ${String(run.runAttempt)}`
-      : `#${String(run.runNumber)}`,
-  );
+      : `#${String(run.runNumber)}`;
+  setText(number, numberText);
+  setAttribute(number, 'title', numberText);
   setTime(date, run.startedAt ?? run.createdAt, now);
   if (run.superseded) {
     setLink(
       commit,
       `${repository.url}/commit/${run.headSha}`,
       `older commit ${run.headSha.slice(0, 7)}`,
+      { title: `Runs on an older commit: ${run.headSha}` },
     );
   } else {
     commit.replaceChildren();
