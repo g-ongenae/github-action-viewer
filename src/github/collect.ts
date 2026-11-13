@@ -73,13 +73,22 @@ export type DiscoveryState = 'complete' | 'partial' | 'failed' | 'skipped';
  * 3. in neither (no longer watched, as far as this collection can tell): drop it only if
  *    {@link watchListComplete}; otherwise keep the previous view.
  *
- * Names: each repository appears once, under the same name in both lists and in the snapshot
- * (and in its repository problems): GitHub's current name once it has been read successfully by
- * this client, the name from the configuration or discovery before that. Names a repository was
- * read under are remembered for the life of the client, so a renamed repository (read through
- * GitHub's redirect) is reported under its new name from then on, and two names of it are
- * coalesced. Remaining gap: a renamed repository never read successfully by this client is
- * reported under its old name; it has no previous view under the new one either.
+ * Names: within one collection, each watched repository appears once, under the same name in
+ * `snapshot.repositories`, in `refreshed` or `notRefreshed`, and in its repository problems.
+ * That name is GitHub's current name if anything of the repository was read in this collection
+ * (GitHub answers an old name with a redirect), and otherwise the name it was looked up by (from
+ * the configuration or discovery). Watch-list entries that turn out to be the same repository
+ * are reported once, keeping the view of the watched (own or maintained) entry. Nothing about
+ * names is remembered from one collection to the next. When a name in the configuration's
+ * `maintainedRepositories` turns out to be an old one, an `other` problem asks to update
+ * `config.json`.
+ *
+ * Limitations of a rename, both transient and both gone once `config.json` uses the current
+ * name: (a) while the configuration still uses the old name, a collection that cannot read the
+ * repository at all reports it under the old name, so it cannot be matched to the view published
+ * under the new name; that view then falls under rule 3 and may be dropped until the next
+ * successful read; (b) after a rename, the view published under the old name stays (stale) next
+ * to the new one until the source that listed it is read completely again.
  */
 export interface CollectionResult {
   readonly snapshot: Snapshot;
@@ -121,16 +130,10 @@ export interface CollectionResult {
 /** The viewer's login never changes for a given token: fetched once per client. */
 const viewers = new WeakMap<GitHubClient, string>();
 
-/**
- * Per client, GitHub's current name for each name a repository was successfully read under (keyed
- * by {@link nameKey}). A renamed repository answers under its old name through a redirect; from
- * then on it is read, reported and coalesced under its new name.
- */
-const canonicalNames = new WeakMap<GitHubClient, Map<string, string>>();
-
 /** What happened to one entry of the watch list. */
 interface Outcome {
-  /** The name it was looked up under. */
+  readonly entry: WatchedRepository;
+  /** GitHub's current name if anything was read, else the name it was looked up by. */
   readonly name: string;
   readonly input: RepositoryInput | null;
   /** Whether `input` is a complete view (see {@link CollectionResult.refreshed}). */
@@ -166,13 +169,6 @@ export async function collectSnapshot(
 
   const viewer = await getViewer(client, signal);
   const api = new GatedApi(client, signal);
-  let aliases = canonicalNames.get(client);
-  if (aliases === undefined) {
-    aliases = new Map();
-    canonicalNames.set(client, aliases);
-  }
-  const names = aliases;
-  const canonical = (name: string): string => names.get(nameKey(name)) ?? name;
 
   const [own, mine] = await Promise.all([
     config.includeOwnRepositories
@@ -183,15 +179,13 @@ export async function collectSnapshot(
       : skipped<PullRequestReference>(),
   ]);
 
-  const watchList = coalesce(
-    resolveWatchList(
-      config,
-      {
-        ownRepositories: own.items,
-        pullRequestRepositories: mine.items.map((reference) => reference.repository),
-      },
-      now,
-    ).map((entry) => ({ ...entry, fullName: canonical(entry.fullName) })),
+  const watchList = resolveWatchList(
+    config,
+    {
+      ownRepositories: own.items,
+      pullRequestRepositories: mine.items.map((reference) => reference.repository),
+    },
+    now,
   );
   const known = new Map(own.items.map((info) => [nameKey(info.fullName), info]));
   const searchComplete = mine.state === 'complete' || mine.state === 'skipped';
@@ -201,71 +195,104 @@ export async function collectSnapshot(
     options.concurrency ?? DEFAULT_CONCURRENCY,
     async (entry): Promise<Outcome> => {
       const references = mine.items.filter((reference) =>
-        sameName(canonical(reference.repository), entry.fullName),
+        sameName(reference.repository, entry.fullName),
       );
+      // Set as soon as GitHub tells the repository's current name, so that a later failure is
+      // still reported under it.
+      const resolved = { name: entry.fullName };
       try {
         api.throwIfStopped();
         let input: RepositoryInput;
         let complete: boolean;
         if (isWatched(entry)) {
-          const watched = await collectWatchedRepository(api, entry, known, viewer, references);
+          const watched = await collectWatchedRepository(
+            api,
+            entry,
+            known,
+            viewer,
+            references,
+            resolved,
+          );
           input = watched.input;
           // The viewer's pull requests beyond the cap are known only from the search.
           complete = !watched.truncated || searchComplete;
         } else {
-          input = await collectPullRequestRepository(api, entry, references);
+          input = await collectPullRequestRepository(api, entry, references, resolved);
           complete = searchComplete;
         }
-        names.set(nameKey(entry.fullName), input.fullName);
-        names.set(nameKey(input.fullName), input.fullName);
-        return { name: entry.fullName, input, complete, failure: null };
+        return { entry, name: input.fullName, input, complete, failure: null };
       } catch (error) {
         if (!(error instanceof GitHubError)) {
           throw error;
         }
-        return { name: entry.fullName, input: null, complete: false, failure: error };
+        return { entry, name: resolved.name, input: null, complete: false, failure: error };
       }
     },
   );
 
-  // Two entries can turn out to be the same repository (an old and a new name read for the
-  // first time): report each repository once, under its current name.
-  const byRepository = new Map<
-    string,
-    { name: string; input: RepositoryInput | null; complete: boolean }
-  >();
   for (const outcome of outcomes) {
-    const name = outcome.input?.fullName ?? canonical(outcome.name);
-    const existing = byRepository.get(nameKey(name));
-    const input =
-      existing?.input && outcome.input
-        ? {
-            ...existing.input,
-            reasons: mergeReasons(existing.input.reasons, outcome.input.reasons),
-          }
-        : (existing?.input ?? outcome.input);
-    byRepository.set(nameKey(name), {
-      name: existing?.name ?? name,
-      input,
-      complete: (existing?.complete ?? false) || outcome.complete,
-    });
-  }
-  let cutOff = 0;
-  for (const outcome of outcomes) {
-    const { failure } = outcome;
-    if (failure instanceof RateLimitError) {
-      cutOff += 1;
-    } else if (
-      failure !== null &&
-      byRepository.get(nameKey(canonical(outcome.name)))?.complete !== true
-    ) {
-      problems.push(repositoryProblem(canonical(outcome.name), failure));
+    const configured = config.maintainedRepositories.find((name) =>
+      sameName(name, outcome.entry.fullName),
+    );
+    if (configured !== undefined && !sameName(configured, outcome.name)) {
+      problems.push(
+        other(
+          `${configured} in config.json is now ${outcome.name}: update maintainedRepositories.`,
+        ),
+      );
     }
   }
-  const statuses = [...byRepository.values()];
-  const refreshed = statuses.filter((status) => status.complete).map((status) => status.name);
-  const notRefreshed = statuses.filter((status) => !status.complete).map((status) => status.name);
-  const repositories = statuses.map((status) => status.input);
+
+  // Entries can turn out to be the same repository (an old and a current name): report each
+  // repository once, from the broadest entry read (an own or maintained entry rather than a
+  // pull-request-only one), with every reason, pull request and run read. It is complete if that
+  // entry is and no entry of the repository failed: a complete watched entry has every open pull
+  // request already.
+  const groups = new Map<string, Outcome[]>();
+  for (const outcome of outcomes) {
+    const group = groups.get(nameKey(outcome.name)) ?? [];
+    group.push(outcome);
+    groups.set(nameKey(outcome.name), group);
+  }
+  const refreshed: string[] = [];
+  const notRefreshed: string[] = [];
+  const repositories: RepositoryInput[] = [];
+  let cutOff = 0;
+  for (const [first, ...others] of groups.values()) {
+    if (first === undefined) {
+      continue;
+    }
+    const group = [first, ...others];
+    const read = group.filter((outcome) => outcome.input !== null);
+    const chosen = read.find((outcome) => isWatched(outcome.entry)) ?? read[0] ?? first;
+    if (chosen.input !== null) {
+      const inputs = read.flatMap((outcome) => (outcome.input === null ? [] : [outcome.input]));
+      const pullRequests = new Map<number, PullRequestInput>();
+      for (const pullRequest of inputs.flatMap((input) => input.pullRequests)) {
+        pullRequests.set(pullRequest.number, pullRequest);
+      }
+      repositories.push({
+        ...chosen.input,
+        reasons: read.reduce<readonly WatchReason[]>(
+          (reasons, outcome) => mergeReasons(reasons, outcome.entry.reasons),
+          [],
+        ),
+        // Runs read twice are collapsed by the core.
+        runs: inputs.flatMap((input) => input.runs),
+        pullRequests: [...pullRequests.values()],
+      });
+    }
+    const { name } = chosen;
+    const complete = chosen.complete && group.every((outcome) => outcome.failure === null);
+    (complete ? refreshed : notRefreshed).push(name);
+    for (const { failure } of group) {
+      if (failure instanceof RateLimitError) {
+        cutOff += 1;
+      } else if (failure !== null) {
+        problems.push(repositoryProblem(name, failure));
+      }
+    }
+  }
 
   const limited = api.rateLimit;
   if (limited !== null) {
@@ -284,7 +311,7 @@ export async function collectSnapshot(
   const snapshot = buildSnapshot(
     {
       viewer,
-      repositories: repositories.filter((repository) => repository !== null),
+      repositories,
       problems,
       rateLimit: core && {
         limit: core.limit,
@@ -534,10 +561,12 @@ async function collectWatchedRepository(
   known: ReadonlyMap<string, RepositoryInfo>,
   viewer: string,
   references: readonly PullRequestReference[],
+  resolved: { name: string },
 ): Promise<{ input: RepositoryInput; truncated: boolean }> {
   const info =
     known.get(nameKey(entry.fullName)) ??
     (await api.get(repositoryPath(entry.fullName), {}, parseRepository));
+  resolved.name = info.fullName;
   const path = repositoryPath(info.fullName);
 
   const runs = await api.get(
@@ -619,6 +648,7 @@ async function collectPullRequestRepository(
   api: GatedApi,
   entry: WatchedRepository,
   references: readonly PullRequestReference[],
+  resolved: { name: string },
 ): Promise<RepositoryInput> {
   let path = repositoryPath(entry.fullName);
   let info: RepositoryInfo | null = null;
@@ -634,6 +664,7 @@ async function collectPullRequestRepository(
       // Under its current name from now on, should the search have used an old one.
       info = details.repository;
       path = repositoryPath(info.fullName);
+      resolved.name = info.fullName;
     }
     if (details.open) {
       pullRequests.push(details.pullRequest);
@@ -697,19 +728,6 @@ async function mapWithConcurrency<T, R>(
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
   return results;
-}
-
-/** Merges watch-list entries that name the same repository, uniting their reasons. */
-function coalesce(entries: readonly WatchedRepository[]): WatchedRepository[] {
-  const merged = new Map<string, WatchedRepository>();
-  for (const entry of entries) {
-    const existing = merged.get(nameKey(entry.fullName));
-    merged.set(
-      nameKey(entry.fullName),
-      existing ? { ...existing, reasons: mergeReasons(existing.reasons, entry.reasons) } : entry,
-    );
-  }
-  return [...merged.values()];
 }
 
 const WATCH_REASONS: readonly WatchReason[] = ['own', 'maintained', 'my_pull_request'];

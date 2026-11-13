@@ -564,7 +564,13 @@ describe('collectSnapshot', () => {
         maintainedRepositories: names,
       });
 
-    it('reports a renamed repository under its new name, in the lists and the snapshot', async () => {
+    const renamedProblem = {
+      kind: 'other',
+      message:
+        'octo-org/old-name in config.json is now octo-org/new-name: update maintainedRepositories.',
+    };
+
+    it('reports a renamed repository under its new name and asks to update the config', async () => {
       const result = await collectSnapshot(
         clientFor(renameScenario()),
         watching('octo-org/old-name'),
@@ -574,24 +580,71 @@ describe('collectSnapshot', () => {
       expect(result.snapshot.repositories.map((r) => r.fullName)).toEqual(['octo-org/new-name']);
       expect(result.refreshed).toEqual(['octo-org/new-name']);
       expect(result.notRefreshed).toEqual([]);
+      expect(result.snapshot.problems).toEqual([renamedProblem]);
     });
 
-    it('keeps using the new name once it is known, failures included', async () => {
+    it('uses the new name everywhere once anything was read, a later failure included', async () => {
+      const github = renameScenario().on('/repos/octo-org/new-name/actions/runs', {
+        status: 502,
+        body: {},
+      });
+
+      const result = await collectSnapshot(clientFor(github), watching('octo-org/old-name'), {
+        now: NOW,
+      });
+
+      expect(result.snapshot.repositories).toEqual([]);
+      expect(result.notRefreshed).toEqual(['octo-org/new-name']);
+      expect(result.refreshed).toEqual([]);
+      expect(result.snapshot.problems).toEqual([
+        renamedProblem,
+        expect.objectContaining({
+          kind: 'repository',
+          repository: 'octo-org/new-name',
+          httpStatus: 502,
+        }) as unknown,
+      ]);
+    });
+
+    it('remembers nothing between collections', async () => {
       const github = renameScenario();
       const client = clientFor(github);
       await collectSnapshot(client, watching('octo-org/old-name'), { now: NOW });
-      github.on('/repos/octo-org/new-name/actions/runs', { status: 502, body: {} });
-      const before = github.requests.length;
+      github.on('/repos/octo-org/old-name', { status: 502, body: {} });
 
       const second = await collectSnapshot(client, watching('octo-org/old-name'), { now: NOW });
 
-      expect(second.notRefreshed).toEqual(['octo-org/new-name']);
-      expect(second.refreshed).toEqual([]);
+      // Nothing could be read: reported under the name it was looked up by (a documented,
+      // transient limitation until config.json uses the new name).
+      expect(second.notRefreshed).toEqual(['octo-org/old-name']);
       expect(second.snapshot.problems).toMatchObject([
-        { kind: 'repository', repository: 'octo-org/new-name', httpStatus: 502 },
+        { kind: 'repository', repository: 'octo-org/old-name', httpStatus: 502 },
       ]);
-      // No more redirect: the repository is read under its new name.
-      expect(github.paths.slice(before).some((path) => path.includes('old-name'))).toBe(false);
+    });
+
+    it('shows a new repository that reuses the old name next to the renamed one', async () => {
+      const github = renameScenario();
+      const client = clientFor(github);
+      await collectSnapshot(client, watching('octo-org/old-name'), { now: NOW });
+      // A different repository now takes the old name: GitHub drops the redirect.
+      const reused = rawRepository('octo-org/old-name');
+      github
+        .on('/repos/octo-org/old-name', cached(reused))
+        .on('/repos/octo-org/old-name/actions/runs', runsOf(rawRun(reused)))
+        .on('/repos/octo-org/old-name/pulls', cached([]));
+
+      const second = await collectSnapshot(
+        client,
+        watching('octo-org/old-name', 'octo-org/new-name'),
+        { now: NOW },
+      );
+
+      expect(second.snapshot.repositories.map((r) => r.fullName).sort()).toEqual([
+        'octo-org/new-name',
+        'octo-org/old-name',
+      ]);
+      expect(second.refreshed).toEqual(['octo-org/new-name', 'octo-org/old-name']);
+      expect(second.snapshot.problems).toEqual([]);
     });
 
     it('coalesces two names of the same repository', async () => {
@@ -602,6 +655,105 @@ describe('collectSnapshot', () => {
       );
 
       expect(result.snapshot.repositories.map((r) => r.fullName)).toEqual(['octo-org/new-name']);
+      expect(result.refreshed).toEqual(['octo-org/new-name']);
+      expect(result.notRefreshed).toEqual([]);
+    });
+
+    it('keeps the watched view when it coalesces with a pull-request-only one', async () => {
+      // The search names the repository by an old name that sorts first, so its pull-request-only
+      // entry is collected first; the maintained entry must still win.
+      const github = renameScenario()
+        .on('/search/issues', { body: { items: [rawSearchItem('octo-org/a-old-name', 5)] } })
+        .on('/repos/octo-org/a-old-name/pulls/5', moved('/repositories/42/pulls/5'))
+        .on('/repositories/42/pulls/5', {
+          body: rawPullRequest(renamed, {
+            number: 5,
+            head: { ref: 'f', sha: 'sha-5', repo: renamed },
+          }),
+        })
+        .on(
+          `/repos/octo-org/new-name/actions/runs?head_sha=sha-5&per_page=${String(REF_RUNS)}`,
+          runsOf(rawRun(renamed, { head_branch: 'f', head_sha: 'sha-5' })),
+        );
+
+      const result = await collectSnapshot(
+        clientFor(github),
+        config({ includeOwnRepositories: false, maintainedRepositories: ['octo-org/new-name'] }),
+        { now: NOW },
+      );
+
+      expect(result.snapshot.repositories).toHaveLength(1);
+      expect(result.snapshot.repositories[0]).toMatchObject({
+        fullName: 'octo-org/new-name',
+        reasons: ['maintained', 'my_pull_request'],
+      });
+      expect(result.snapshot.repositories[0]?.lines.map((line) => line.label)).toContain('main');
+      expect(result.refreshed).toEqual(['octo-org/new-name']);
+    });
+
+    it('keeps the pull requests only the pull-request-only entry read', async () => {
+      // The maintained entry's open-PR list is cut off by the cap and the search names #5 only
+      // under the old name: #5 is known from the pull-request-only entry alone.
+      const github = renameScenario()
+        .on('/search/issues', { body: { items: [rawSearchItem('octo-org/a-old-name', 5)] } })
+        .on('/repos/octo-org/new-name/pulls', (request) => {
+          const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+          return {
+            body: [
+              rawPullRequest(renamed, {
+                number: 1000 + page,
+                user: { login: 'hubot' },
+                head: { ref: `b-${String(page)}`, sha: 'x', repo: renamed },
+              }),
+            ],
+            headers: {
+              link: `<https://api.github.com/repos/octo-org/new-name/pulls?page=${String(page + 1)}>; rel="next"`,
+            },
+          };
+        })
+        .on('/repos/octo-org/a-old-name/pulls/5', moved('/repositories/42/pulls/5'))
+        .on('/repositories/42/pulls/5', {
+          body: rawPullRequest(renamed, {
+            number: 5,
+            head: { ref: 'f', sha: 'sha-5', repo: renamed },
+          }),
+        })
+        .on(
+          `/repos/octo-org/new-name/actions/runs?head_sha=sha-5&per_page=${String(REF_RUNS)}`,
+          runsOf(rawRun(renamed, { id: 55, head_branch: 'f', head_sha: 'sha-5' })),
+        );
+
+      const result = await collectSnapshot(
+        clientFor(github),
+        config({ includeOwnRepositories: false, maintainedRepositories: ['octo-org/new-name'] }),
+        { now: NOW },
+      );
+
+      const labels = result.snapshot.repositories[0]?.lines.map((line) => line.label);
+      expect(labels).toContain('main');
+      expect(labels).toContain('#5');
+    });
+
+    it('vouches for a complete watched view even when the search behind its alias was partial', async () => {
+      const github = renameScenario()
+        .on('/search/issues', {
+          body: { incomplete_results: true, items: [rawSearchItem('octo-org/a-old-name', 5)] },
+        })
+        .on('/repos/octo-org/a-old-name/pulls/5', moved('/repositories/42/pulls/5'))
+        .on('/repositories/42/pulls/5', {
+          body: rawPullRequest(renamed, {
+            number: 5,
+            head: { ref: 'f', sha: 'sha-5', repo: renamed },
+          }),
+        });
+
+      const result = await collectSnapshot(
+        clientFor(github),
+        config({ includeOwnRepositories: false, maintainedRepositories: ['octo-org/new-name'] }),
+        { now: NOW },
+      );
+
+      // The maintained entry read every open pull request: its view does not depend on the search.
       expect(result.refreshed).toEqual(['octo-org/new-name']);
       expect(result.notRefreshed).toEqual([]);
     });
