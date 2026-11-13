@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:web": "node src/scripts/build-web.ts",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -20,7 +21,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
-    "snapshot": "node src/scripts/snapshot.ts"
+    "snapshot": "node src/scripts/snapshot.ts",
+    "start": "pnpm run build:web && node src/server/main.ts",
+    "dev": "pnpm run build:web && node --watch src/server/main.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
