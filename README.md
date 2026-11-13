@@ -6,25 +6,71 @@ A small local web page that shows, in real time, the GitHub Actions runs I care 
 - runs in my own repositories,
 - runs in repositories I maintain (an editable list).
 
-> Work in progress — the project is being built up through a series of pull requests.
+One section per repository, one line per branch or pull request: state, ref, date, commit title
+and author. It updates by itself, and the tab title and icon say whether something is running or
+failed, so a pinned tab is enough.
 
-## Running it
+![The page in demo mode: repositories with running, failed, waiting and passed lines, one pull request expanded to its workflow runs, and notices about a configuration problem and slowed-down polling](docs/screenshot.png)
+
+<sup>Demo mode (`pnpm demo`): every name on it is made up.</sup>
+
+## Quick start
 
 ```sh
 pnpm install
-pnpm start                 # http://127.0.0.1:4680/
-pnpm start --port 4700 --config ~/my-viewer.json
-pnpm start --help
+pnpm start                 # then open http://127.0.0.1:4680/
 ```
 
-`pnpm start` runs the TypeScript sources directly with Node 26 (no build step for the server) after
-copying the page's files to `dist/web/`. `pnpm dev` does the same and restarts the server whenever
-one of its source files changes.
+That is all if the [GitHub CLI](https://cli.github.com/) is logged in (`gh auth login`); otherwise
+set `GITHUB_TOKEN` (see [Token](#token)). Without a configuration file the page shows your own
+repositories pushed to in the last 30 days and every repository where you have an open pull
+request; add the repositories you maintain in [`config.json`](#configuration).
 
-The server needs a GitHub token (see [Token](#token)), and prints one line with its URL. It then
-logs a line per collection when something changes (at most one a minute while runs progress, one
-every ten minutes otherwise): repositories shown, requests sent and how many were free `304`s, the
-remaining quota and the next poll. Stop it with Ctrl+C.
+```sh
+pnpm start --port 4700 --config ~/my-viewer.json
+pnpm start --help
+pnpm demo                  # made-up data, no token needed (see Demo mode)
+```
+
+`pnpm start` compiles the page into `dist/web/`, then runs the server's TypeScript sources
+directly with Node 26 (no build step for the server). The server prints one line with its URL. It
+then logs a line per collection when something changes (at most one a minute while runs progress,
+one every ten minutes otherwise): repositories shown, requests sent and how many were free `304`s,
+the remaining quota and the next poll. Stop it with Ctrl+C.
+
+## Reading the page
+
+**Under the heading**, the status line says whether the page is connected (_Live_,
+_Reconnecting…_, _Disconnected_), when GitHub was last checked, and what is going on: how many
+lines are running, failed (the newest commit has a failed or timed-out run) or waiting for
+someone. Notices follow when something deserves attention: data that could not be refreshed (with
+the reason and since when), problems in `config.json` (the exact messages; the last valid
+configuration keeps applying), polling slowed down to save the API quota or held by a rate limit,
+and repositories that could not be read.
+
+**Each line** reads `[state] ref date commit title … author`:
+
+| State              | Meaning                                                                       |
+| ------------------ | ----------------------------------------------------------------------------- |
+| Running, Queued    | A run is in progress, or accepted but not started.                            |
+| Waiting            | Paused on an environment protection rule (e.g. a required reviewer).          |
+| Needs action       | GitHub needs someone to act, e.g. approve a first-time contributor.           |
+| Failed, Timed out  | A run failed (also when the workflow file is invalid) or timed out.           |
+| Cancelled, Skipped | The run was cancelled, or its jobs were skipped.                              |
+| Passed, Neutral    | The runs succeeded, or ended neutral.                                         |
+| Stale, Unknown     | GitHub gave up on an incomplete run, or sent a state this tool does not know. |
+
+Every state has its own icon shape as well as its colour. A line takes the most urgent state of its
+runs: anything running wins, so a line reads _Running_ even while only a run of an **older**
+commit is still going; a note under the line then says so ("running on an older commit · newest
+commit passed"), and failures among several runs show as "1 of 3 failed". The ref links to the
+pull request or to the branch's runs; for a pull request, its title follows the commit title in
+grey. Click the state (or press Enter on it) to list the line's workflow runs with their event,
+number, attempt and time, each linking to its run on GitHub; hover any date for the exact time.
+
+A repository the server could not refresh keeps its earlier lines, marked by a dashed rule and
+"may be out of date". The tab title reads e.g. "2 running · 1 failed · My GitHub Actions", and the
+tab icon is green (all quiet), blue (running), red (failed) or grey (disconnected).
 
 ## Configuration
 
@@ -138,6 +184,23 @@ grant read access to _Metadata_, _Pull requests_ and _Actions_ on the repositori
 followed by the number of requests it took and the remaining API quota (`--json` prints the whole
 result as JSON). It reads the same configuration file as the server (`--config` works too).
 
+## Demo mode
+
+```sh
+pnpm demo                              # every state and notice at once
+pnpm demo --demo-variant failing       # collections failing: the last data, marked stale
+pnpm demo --demo-variant empty         # connected, nothing to show
+pnpm demo --demo-variant first-load    # waiting for the first collection
+```
+
+`pnpm demo` (`pnpm start --demo`) serves the real page from made-up data
+([`src/demo/`](src/demo/)): no token, no configuration file, no request to GitHub. Every run state
+appears, along with a pull request failing while it still runs, a line running on an older commit,
+a draft, long, right-to-left and emoji text, a stale repository, a configuration problem and
+slowed-down polling. Every 30 seconds a running line finishes or starts again, to show live
+updates. Use it to work on the page, to take screenshots, or to see every state. Stop the server to
+see the disconnected state.
+
 ## Development
 
 Requirements:
@@ -153,18 +216,39 @@ pnpm install    # install dependencies from the lockfile
 pnpm run check  # run every gate CI runs
 ```
 
-| Script               | What it does                                           |
-| -------------------- | ------------------------------------------------------ |
-| `pnpm start`         | Run the server (see [Running it](#running-it))         |
-| `pnpm dev`           | Run the server, restarting it on source changes        |
-| `pnpm build`         | Compile `src/` to `dist/` with `tsc`                   |
-| `pnpm build:web`     | Copy the page's files from `src/web/` to `dist/web/`   |
-| `pnpm typecheck`     | Type-check sources, tests and config files             |
-| `pnpm lint`          | ESLint (type-aware); `lint:fix` applies safe fixes     |
-| `pnpm format`        | Format everything with Prettier                        |
-| `pnpm format:check`  | Fail if a file is not Prettier-formatted               |
-| `pnpm test`          | Run the Vitest suite once                              |
-| `pnpm test:watch`    | Run Vitest in watch mode                               |
-| `pnpm test:coverage` | Run the tests with V8 coverage (report in `coverage/`) |
-| `pnpm check`         | `format:check`, `lint`, `typecheck`, `test`, `build`   |
-| `pnpm snapshot`      | Collect once from the live GitHub API and print it     |
+| Script               | What it does                                                           |
+| -------------------- | ---------------------------------------------------------------------- |
+| `pnpm start`         | Build the page and run the server (see [Quick start](#quick-start))    |
+| `pnpm dev`           | Same, rebuilding the page and restarting the server as sources change  |
+| `pnpm demo`          | Run the server on made-up data (see [Demo mode](#demo-mode))           |
+| `pnpm build`         | Compile `src/` to `dist/` with `tsc`, then build the page              |
+| `pnpm build:web`     | Copy `src/web/`'s static files to `dist/web/` and compile its modules  |
+| `pnpm typecheck`     | Type-check sources, tests and config files (Node and browser projects) |
+| `pnpm lint`          | ESLint (type-aware); `lint:fix` applies safe fixes                     |
+| `pnpm format`        | Format everything with Prettier                                        |
+| `pnpm format:check`  | Fail if a file is not Prettier-formatted                               |
+| `pnpm test`          | Run the Vitest suite once (DOM tests run under happy-dom)              |
+| `pnpm test:watch`    | Run Vitest in watch mode                                               |
+| `pnpm test:coverage` | Run the tests with V8 coverage (report in `coverage/`)                 |
+| `pnpm check`         | `format:check`, `lint`, `typecheck`, `test`, `build`                   |
+| `pnpm snapshot`      | Collect once from the live GitHub API and print it                     |
+
+`pnpm dev` passes its arguments to the server (`pnpm dev --demo`). It recompiles the page's
+modules and copies its HTML, CSS and icons as they change; reload the tab to see them.
+
+### Architecture
+
+| Directory                      | Role                                                                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| [`src/core/`](src/core/)       | Pure model, no I/O: run states, configuration parsing, grouping runs into the lines of a `Snapshot`.                         |
+| [`src/github/`](src/github/)   | Read-only REST client (ETags, rate limits) and the collection that turns API answers into core inputs.                       |
+| [`src/server/`](src/server/)   | The process: configuration file, poller and quota pacing, the payload, and the HTTP/SSE server.                              |
+| [`src/web/`](src/web/)         | The page: plain DOM and TypeScript, compiled by `tsc` to native ES modules in `dist/web/modules/`; no framework, no bundler. |
+| [`src/demo/`](src/demo/)       | Demo mode's made-up payload, loaded only with `--demo`.                                                                      |
+| [`src/scripts/`](src/scripts/) | `build:web`, `dev` and `snapshot`.                                                                                           |
+
+The page imports the payload's types from `src/server/payload.ts` and a few pure functions from
+`src/core/run-state.ts`; its build program has DOM types only, so a Node API reaching the page
+fails the build. It renders by matching repositories, lines and runs to their elements by key and
+updating only what changed, so updates never close an expanded line or move the focus. Text from
+GitHub is only ever set as text, and only `https://github.com/` URLs become links.
