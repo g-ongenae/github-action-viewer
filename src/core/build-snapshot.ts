@@ -308,7 +308,8 @@ function stateOf(run: WorkflowRunInput): ReturnType<typeof normaliseRunState> {
 
 // --- Ordering. Every comparator ends on a unique key so that sorting is fully deterministic. ---
 
-function compareRepositories(a: RepositoryView, b: RepositoryView): number {
+/** Display order of repositories (see {@link buildSnapshot}); exported to merge snapshots. */
+export function compareRepositories(a: RepositoryView, b: RepositoryView): number {
   return (
     Number(b.active) - Number(a.active) ||
     compareDates(newestLineDate(b), newestLineDate(a)) ||

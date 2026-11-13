@@ -1,43 +1,35 @@
-// `pnpm run snapshot [--json]`: collects one snapshot from the live GitHub API and prints it.
-// A manual check of the GitHub client until the server arrives; it reads `config.json` from the
-// repository root if there is one, and uses the defaults otherwise.
+// `pnpm run snapshot [--json] [--config <path>]`: collects one snapshot from the live GitHub API
+// and prints it. It reads the same configuration file as the server, and uses the defaults if
+// there is none.
 
-import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import { DEFAULT_CONFIG, formatConfigIssues, parseConfig, type Config } from '../core/config.ts';
+import { DEFAULT_CONFIG, type Config } from '../core/config.ts';
 import { GitHubClient } from '../github/client.ts';
 import { collectSnapshot } from '../github/collect.ts';
 import { resolveToken } from '../github/token.ts';
+import { configPath, readConfigFile } from '../server/config-file.ts';
 import { describeFailure, formatCollection, ScriptError } from './format-snapshot.ts';
 
-const CONFIG_FILE = new URL('../../config.json', import.meta.url);
-
-async function readConfig(): Promise<Config> {
-  let text: string;
-  try {
-    text = await readFile(CONFIG_FILE, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+async function readConfig(path: string): Promise<Config> {
+  const read = await readConfigFile(path);
+  switch (read.kind) {
+    case 'missing':
       return DEFAULT_CONFIG;
-    }
-    throw new ScriptError('Could not read config.json.');
+    case 'ok':
+      return read.config;
+    case 'invalid':
+      throw new ScriptError(`Invalid configuration in ${path}:\n${read.problems}`);
   }
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new ScriptError('config.json is not valid JSON.');
-  }
-  const result = parseConfig(json);
-  if (!result.ok) {
-    throw new ScriptError(`Invalid config.json:\n${formatConfigIssues(result.issues)}`);
-  }
-  return result.config;
 }
 
 async function main(): Promise<void> {
-  const { values } = parseArgs({ options: { json: { type: 'boolean', default: false } } });
-  const config = await readConfig();
+  const { values } = parseArgs({
+    options: {
+      json: { type: 'boolean', default: false },
+      config: { type: 'string', short: 'c' },
+    },
+  });
+  const config = await readConfig(configPath(values.config));
   const { token, source } = await resolveToken();
   const client = new GitHubClient({ token });
   const result = await collectSnapshot(client, config, { now: new Date() });

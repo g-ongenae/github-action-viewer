@@ -26,6 +26,9 @@ export interface Config {
 /** Smallest accepted poll interval: polling faster burns the API quota for little benefit. */
 export const MIN_POLL_INTERVAL_SECONDS = 10;
 
+/** Largest accepted poll interval: an hour is already far from real time. */
+export const MAX_POLL_INTERVAL_SECONDS = 3600;
+
 export const DEFAULT_CONFIG: Config = {
   maintainedRepositories: [],
   excludedRepositories: [],
@@ -76,6 +79,7 @@ export function parseConfig(value: unknown): ParseConfigResult {
     pollIntervalSeconds: reader.number('pollIntervalSeconds', {
       integer: true,
       min: MIN_POLL_INTERVAL_SECONDS,
+      max: MAX_POLL_INTERVAL_SECONDS,
     }),
     port: reader.number('port', { integer: true, min: 1, max: 65_535 }),
   };
