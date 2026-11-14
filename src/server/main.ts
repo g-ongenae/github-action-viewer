@@ -11,7 +11,7 @@ import { MalformedTokenError } from '../github/errors.ts';
 import { resolveToken, TokenNotFoundError } from '../github/token.ts';
 import { CollectionLog } from './collection-log.ts';
 import { CONFIG_PATH_VARIABLE, ConfigFile, configPath } from './config-file.ts';
-import { HOST, ViewerServer } from './http.ts';
+import { HOST, isValidHost, ViewerServer } from './http.ts';
 import { createLog } from './log.ts';
 import { Poller } from './poller.ts';
 import { PayloadStore } from './store.ts';
@@ -21,7 +21,8 @@ const STATIC_ROOT = fileURLToPath(new URL('../../dist/web/', import.meta.url));
 /** How long shutting down may take before the process exits anyway. */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
-const USAGE = `Usage: pnpm start [--port <port>] [--config <path>] [--demo [--demo-variant <name>]]
+const USAGE = `Usage: pnpm start [--port <port>] [--config <path>] [--allowed-host <host>]...
+                 [--demo [--demo-variant <name>]]
 
 Serves a page showing the GitHub Actions runs you care about, on http://${HOST}:<port>/.
 
@@ -29,6 +30,9 @@ Options:
   -p, --port <port>    Port to listen on (default: "port" in the configuration, 4680).
   -c, --config <path>  Configuration file (default: $${CONFIG_PATH_VARIABLE}, or config.json
                        at the repository root). Changes apply without a restart.
+  --allowed-host <host>
+                       Also answer to this Host, as the browser sends it (name, or
+                       name:port), e.g. behind \`tailscale serve\`. Repeatable.
   --demo               Serve made-up data instead of collecting from GitHub (no token, no
                        configuration): every state the page can show.
   --demo-variant <name>
@@ -41,6 +45,8 @@ The GitHub token is read from GITHUB_TOKEN, then GH_TOKEN, then \`gh auth token\
 interface Options {
   readonly port: number | undefined;
   readonly config: string | undefined;
+  /** Extra `Host` values to answer to, from `--allowed-host`. */
+  readonly allowedHosts: readonly string[];
   /** The demo variant to serve; undefined outside demo mode. */
   readonly demo: string | undefined;
 }
@@ -52,6 +58,7 @@ function parseOptions(args: readonly string[]): Options | null {
     options: {
       port: { type: 'string', short: 'p' },
       config: { type: 'string', short: 'c' },
+      'allowed-host': { type: 'string', multiple: true },
       demo: { type: 'boolean' },
       'demo-variant': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -73,8 +80,14 @@ function parseOptions(args: readonly string[]): Options | null {
   if (values['demo-variant'] !== undefined && values.demo !== true) {
     throw new Error('--demo-variant: only valid with --demo');
   }
+  const allowedHosts = values['allowed-host'] ?? [];
+  for (const host of allowedHosts) {
+    if (!isValidHost(host)) {
+      throw new Error(`--allowed-host: expected a host name, optionally with :port, got "${host}"`);
+    }
+  }
   const demo = values.demo === true ? (values['demo-variant'] ?? 'full') : undefined;
-  return { port, config: values.config, demo };
+  return { port, config: values.config, allowedHosts, demo };
 }
 
 async function main(): Promise<number> {
@@ -93,7 +106,13 @@ async function main(): Promise<number> {
   if (options.demo !== undefined) {
     // Loaded only here, so that demo code never runs, or even loads, in normal mode.
     const { serveDemo } = await import('../demo/serve.ts');
-    return serveDemo({ variant: options.demo, port: options.port, staticRoot: STATIC_ROOT, log });
+    return serveDemo({
+      variant: options.demo,
+      port: options.port,
+      allowedHosts: options.allowedHosts,
+      staticRoot: STATIC_ROOT,
+      log,
+    });
   }
   const collectionLog = new CollectionLog(log);
   let listeningPort = 0;
@@ -148,7 +167,12 @@ async function main(): Promise<number> {
     },
   });
   const store = new PayloadStore(poller.state, configFile.status);
-  const server = new ViewerServer({ source: store, staticRoot: STATIC_ROOT, log });
+  const server = new ViewerServer({
+    source: store,
+    staticRoot: STATIC_ROOT,
+    log,
+    allowedHosts: options.allowedHosts,
+  });
 
   const port = options.port ?? configFile.config.port;
   try {

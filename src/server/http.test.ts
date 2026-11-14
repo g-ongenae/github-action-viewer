@@ -3,7 +3,7 @@ import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CONTENT_SECURITY_POLICY, ViewerServer } from './http.ts';
+import { CONTENT_SECURITY_POLICY, isValidHost, ViewerServer } from './http.ts';
 import type { Heartbeat } from './payload.ts';
 import type { PayloadSource } from './store.ts';
 
@@ -248,6 +248,75 @@ describe('ViewerServer', () => {
     );
     expect((await send('/api/snapshot', { headers: resolved })).status).toBe(status);
     expect((await send('/api/events', { method: 'HEAD', headers: resolved })).status).toBe(status);
+  });
+
+  it.each(['cross-site', 'same-site'])(
+    'serves the page to a %s navigation (a link from another site)',
+    async (site) => {
+      const navigation = {
+        'sec-fetch-site': site,
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-dest': 'document',
+      };
+      expect((await send('/', { headers: navigation })).status).toBe(200);
+      // Only the page: API reads and sub-resources from another site are still refused.
+      expect((await send('/api/snapshot', { headers: navigation })).status).toBe(403);
+      expect(
+        (await send('/', { headers: { ...navigation, 'sec-fetch-dest': 'iframe' } })).status,
+      ).toBe(403);
+      expect(
+        (await send('/', { headers: { ...navigation, origin: 'https://attacker.example' } }))
+          .status,
+      ).toBe(403);
+      expect((await send('/', { headers: { 'sec-fetch-site': site } })).status).toBe(403);
+    },
+  );
+
+  it('answers to allowed hosts and their origins, and to them only', async () => {
+    const proxied = new ViewerServer({
+      source,
+      staticRoot: root,
+      log: () => undefined,
+      allowedHosts: ['Box.tailnet.ts.net:4680'],
+    });
+    const proxiedPort = await proxied.listen(0);
+    const get = (headers: Record<string, string>): Promise<number> =>
+      new Promise((resolve, reject) => {
+        httpRequest(
+          { host: '127.0.0.1', port: proxiedPort, path: '/api/snapshot', headers },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          },
+        )
+          .on('error', reject)
+          .end();
+      });
+    try {
+      const tailnet = 'box.tailnet.ts.net:4680';
+      expect(await get({ host: tailnet })).toBe(200);
+      expect(await get({ host: tailnet, origin: `https://${tailnet}` })).toBe(200);
+      expect(await get({ host: `127.0.0.1:${String(proxiedPort)}` })).toBe(200);
+      expect(await get({ host: 'box.tailnet.ts.net' })).toBe(403);
+      expect(await get({ host: 'other.tailnet.ts.net:4680' })).toBe(403);
+      expect(await get({ host: tailnet, origin: 'https://other.tailnet.ts.net:4680' })).toBe(403);
+      expect(await get({ host: tailnet, 'sec-fetch-site': 'same-site' })).toBe(403);
+    } finally {
+      await proxied.close();
+    }
+  });
+
+  it.each([
+    ['box.tailnet.ts.net', true],
+    ['box.tailnet.ts.net:4680', true],
+    ['127.0.0.1:8080', true],
+    ['', false],
+    ['http://box.tailnet.ts.net', false],
+    ['box.tailnet.ts.net/path', false],
+    ['box..ts.net', false],
+    ['box.ts.net:', false],
+  ])('isValidHost(%j) is %s', (value, valid) => {
+    expect(isValidHost(value)).toBe(valid);
   });
 
   it('streams the payload, changes and heartbeats, and forgets disconnected clients', async () => {

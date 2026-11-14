@@ -70,13 +70,20 @@ export interface ViewerServerOptions {
   readonly log: Log;
   readonly heartbeatMs?: number;
   readonly maxEventClients?: number;
+  /**
+   * Extra `Host` values (`name` or `name:port`, as the browser sends them) the server answers to,
+   * e.g. the name of a reverse proxy such as `tailscale serve`; the matching `http://` and
+   * `https://` origins are accepted too. Loopback names are always accepted.
+   */
+  readonly allowedHosts?: readonly string[];
 }
 
 /**
  * The local HTTP server: the page's static files, `GET /api/snapshot` and the `GET /api/events`
  * stream. It listens on the loopback interface only and only answers same-origin requests that
- * name it by a loopback host name, so that other web pages open in the browser cannot read it
- * (see the README's security section).
+ * name it by a loopback host name or an allowed host, so that other web pages open in the browser
+ * cannot read it (see the README's security section). Opening the page itself from a link on
+ * another site is a navigation, not a read, and is let through.
  */
 export class ViewerServer {
   readonly #options: ViewerServerOptions;
@@ -149,7 +156,7 @@ export class ViewerServer {
       sendText(response, 403, 'Forbidden');
       return;
     }
-    if (isCrossSite(request, this.#port)) {
+    if (isCrossSite(request, this.#origins) && !isPageNavigation(request)) {
       sendText(response, 403, 'Forbidden');
       return;
     }
@@ -186,7 +193,18 @@ export class ViewerServer {
    * 127.0.0.1 reaches this server with `Host: attacker.example:4680`, and is refused.
    */
   #isAllowedHost(host: string | undefined): boolean {
-    return host !== undefined && allowedOrigins(this.#port).has(`http://${host.toLowerCase()}`);
+    return host !== undefined && this.#origins.has(`http://${host.toLowerCase()}`);
+  }
+
+  /** The origins (and, without the scheme, the `Host` values) under which the server is reached. */
+  get #origins(): Set<string> {
+    const port = String(this.#port);
+    const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    for (const host of this.#options.allowedHosts ?? []) {
+      origins.add(`http://${host.toLowerCase()}`);
+      origins.add(`https://${host.toLowerCase()}`);
+    }
+    return origins;
   }
 
   #openStream(request: IncomingMessage, response: ServerResponse): void {
@@ -248,9 +266,12 @@ export class ViewerServer {
   }
 }
 
-/** The origins (and, without the scheme, the `Host` values) under which the server is reached. */
-function allowedOrigins(port: number): Set<string> {
-  return new Set([`http://127.0.0.1:${String(port)}`, `http://localhost:${String(port)}`]);
+/** A `Host` value: a DNS name or IPv4 address, with an optional port. */
+const HOST_PATTERN = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::\d{1,5})?$/i;
+
+/** Whether `value` can be passed in {@link ViewerServerOptions.allowedHosts}. */
+export function isValidHost(value: string): boolean {
+  return HOST_PATTERN.test(value);
 }
 
 /**
@@ -259,13 +280,28 @@ function allowedOrigins(port: number): Set<string> {
  * Requests without these headers (curl, old browsers) are let through; the `Host` check still
  * applies to them.
  */
-function isCrossSite(request: IncomingMessage, port: number): boolean {
+function isCrossSite(request: IncomingMessage, origins: ReadonlySet<string>): boolean {
   const site = request.headers['sec-fetch-site'];
   if (site !== undefined && site !== 'same-origin' && site !== 'none') {
     return true;
   }
   const origin = request.headers.origin;
-  return origin !== undefined && !allowedOrigins(port).has(origin.toLowerCase());
+  return origin !== undefined && !origins.has(origin.toLowerCase());
+}
+
+/**
+ * Whether the browser is opening a page of the viewer in a tab, e.g. after a click on a link from
+ * another site. The other site cannot read the answer (no CORS, no framing), so it is safe to
+ * serve; reads of `/api/` from another site are still refused.
+ */
+function isPageNavigation(request: IncomingMessage): boolean {
+  return (
+    request.method === 'GET' &&
+    request.headers['sec-fetch-mode'] === 'navigate' &&
+    request.headers['sec-fetch-dest'] === 'document' &&
+    request.headers.origin === undefined &&
+    !(request.url ?? '').startsWith('/api/')
+  );
 }
 
 /**
