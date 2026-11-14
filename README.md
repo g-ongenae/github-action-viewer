@@ -149,17 +149,30 @@ The event stream sends:
 At most 16 streams are open at once; more get `503`. Other methods than `GET` and `HEAD` get
 `405`, unknown paths `404`, and error bodies are a generic word or two.
 
+### Behind a reverse proxy
+
+To reach the viewer from other devices, put a reverse proxy in front of it and name the host the
+browser will use with `--allowed-host` (repeatable; `name:port` unless the proxy is on the
+default port). With [Tailscale](https://tailscale.com/kb/1312/serve):
+
+```sh
+pnpm start --allowed-host my-machine.my-tailnet.ts.net:4680
+tailscale serve --bg --https 4680 http://127.0.0.1:4680
+```
+
 ### Security
 
 The process holds a token that may have write scopes, and any web page open in the browser can
 send requests to `127.0.0.1`. So the server:
 
 - listens on the loopback interface only, so other machines cannot reach it;
-- refuses (`403`) any `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, which defeats
-  DNS rebinding (a hostile domain re-pointed to 127.0.0.1 still sends its own name);
+- refuses (`403`) any `Host` other than `127.0.0.1:<port>`, `localhost:<port>` or one given with
+  `--allowed-host`, which defeats DNS rebinding (a hostile domain re-pointed to 127.0.0.1 still
+  sends its own name);
 - sends no CORS headers, so other origins cannot read responses, and refuses (`403`) requests the
   browser marks as cross-site or same-site (`Sec-Fetch-Site`) or that carry a foreign `Origin`, so
-  they do not even run;
+  they do not even run. The one exception is opening the page in a tab from a link on another
+  site (a top-level navigation, which the other site cannot read);
 - answers only `GET` and `HEAD`, and never sends anything to GitHub but `GET` requests;
 - sends `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
 img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors

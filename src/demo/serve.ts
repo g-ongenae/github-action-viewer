@@ -11,6 +11,8 @@ export interface DemoOptions {
   readonly variant: string;
   /** Port from `--port`; the default port otherwise (the configuration file is not read). */
   readonly port: number | undefined;
+  /** Extra `Host` values to answer to, from `--allowed-host`. */
+  readonly allowedHosts: readonly string[];
   readonly staticRoot: string;
   readonly log: Log;
 }
@@ -24,7 +26,12 @@ export async function serveDemo(options: DemoOptions): Promise<number> {
     return 2;
   }
   const source = new DemoSource(options.variant);
-  const server = new ViewerServer({ source, staticRoot: options.staticRoot, log: options.log });
+  const server = new ViewerServer({
+    source,
+    staticRoot: options.staticRoot,
+    log: options.log,
+    allowedHosts: options.allowedHosts,
+  });
   const port = options.port ?? DEFAULT_CONFIG.port;
   let listening: number;
   try {
