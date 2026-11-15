@@ -8,6 +8,7 @@
   color-scheme: light dark;
 
   --bg: #f6f6f3;
+  --surface: #ffffff;
   --text: #1c2024;
   --muted: #586069;
   --faint: #8b9198;
@@ -41,6 +42,7 @@
     /* A soft charcoal rather than black, with slightly desaturated state colours that keep
        their contrast without glowing. */
     --bg: #15171a;
+    --surface: #1c1f23;
     --text: #e3e5e8;
     --muted: #a0a7b0;
     --faint: #6c737c;
@@ -151,6 +153,8 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
+  /* Takes the room left by the heading, which pushes "Add repository" to the far end. */
+  flex: 1 1 auto;
   margin: 0;
   color: var(--muted);
   font-size: 0.875rem;
@@ -725,4 +729,251 @@ main {
   .run-commit:empty {
     display: none;
   }
+}
+
+/* Buttons ---------------------------------------------------------------------------------- */
+
+.button {
+  flex: none;
+  margin: 0;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--faint);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--hover);
+}
+
+.button-primary {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--bg);
+}
+
+.button-primary:hover {
+  background: color-mix(in srgb, var(--active) 88%, var(--text));
+}
+
+.button-quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.button-quiet:hover {
+  color: var(--text);
+}
+
+.button:disabled,
+.suggestion-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* A change is on its way: the buttons wait without losing the focus. */
+.button[aria-disabled='true'],
+.suggestion-button[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Adding repositories ---------------------------------------------------------------------- */
+
+.repository-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(100vh - 2rem));
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 0.28);
+}
+
+.repository-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.dialog-body {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 650;
+}
+
+.dialog-close {
+  margin-right: -0.75rem;
+}
+
+.dialog-intro,
+.dialog-note,
+.dialog-message,
+.dialog-blocked {
+  margin: 0.4rem 0 0;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.dialog-intro,
+.dialog-note {
+  color: var(--muted);
+}
+
+.dialog-blocked {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--warning-rule);
+  border-radius: 0 6px 6px 0;
+  background: var(--warning-bg);
+}
+
+.field {
+  margin-top: 1rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.field-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--faint);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+.field-input::placeholder {
+  color: var(--faint);
+}
+
+.field-input:disabled {
+  opacity: 0.6;
+}
+
+.dialog-message {
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.message-info {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.message-success {
+  color: var(--success);
+}
+
+.message-error {
+  color: var(--failure);
+}
+
+.suggestions,
+.maintained {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.suggestion,
+.maintained-item {
+  border-bottom: 1px solid var(--rule);
+}
+
+.suggestion-button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.25rem;
+  margin: 0;
+  padding: 0.3rem 0.4rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggestion-button:hover,
+.suggestion-button:focus-visible {
+  background: var(--hover);
+}
+
+.suggestion-name,
+.maintained-name {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.suggestion-kind {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.suggestion-private {
+  color: var(--attention);
+}
+
+.dialog-subtitle {
+  margin: 1.5rem 0 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+}
+
+.maintained-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  padding-left: 0.4rem;
+}
+
+.maintained-name a {
+  text-decoration: none;
+}
+
+.maintained-name a:hover {
+  text-decoration: underline;
 }

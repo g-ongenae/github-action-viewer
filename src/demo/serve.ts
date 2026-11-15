@@ -13,6 +13,8 @@ export interface DemoOptions {
   readonly port: number | undefined;
   /** Extra `Host` values to answer to, from `--allowed-host`. */
   readonly allowedHosts: readonly string[];
+  /** Whether the page may not edit the (made-up) watch list, from `--read-only`. */
+  readonly readOnly: boolean;
   readonly staticRoot: string;
   readonly log: Log;
 }
@@ -25,12 +27,13 @@ export async function serveDemo(options: DemoOptions): Promise<number> {
     );
     return 2;
   }
-  const source = new DemoSource(options.variant);
+  const source = new DemoSource(options.variant, Date.now, !options.readOnly);
   const server = new ViewerServer({
     source,
     staticRoot: options.staticRoot,
     log: options.log,
     allowedHosts: options.allowedHosts,
+    ...(options.readOnly ? {} : { watchList: source.watchList }),
   });
   const port = options.port ?? DEFAULT_CONFIG.port;
   let listening: number;

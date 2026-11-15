@@ -1,8 +1,20 @@
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG } from '../core/config.ts';
+import { DEFAULT_CONFIG, type Config } from '../core/config.ts';
 import { ConfigFile, configPath, readConfigFile, type ConfigFileOptions } from './config-file.ts';
 import type { Clock } from './poller.ts';
 
@@ -73,7 +85,13 @@ describe('ConfigFile', () => {
     const file = new ConfigFile(path, { log });
     await file.load();
     expect(file.config).toBe(DEFAULT_CONFIG);
-    expect(file.status).toEqual({ state: 'missing', problems: null, fallback: null });
+    expect(file.status).toEqual({
+      state: 'missing',
+      problems: null,
+      fallback: null,
+      maintainedRepositories: [],
+      editing: 'on',
+    });
     expect(logs).toEqual([
       `No configuration file: using the defaults. Create ${path} to change them.`,
     ]);
@@ -88,6 +106,8 @@ describe('ConfigFile', () => {
       state: 'invalid',
       problems: 'expected an object, got a list',
       fallback: 'defaults',
+      maintainedRepositories: [],
+      editing: 'blocked',
     });
   });
 
@@ -105,7 +125,7 @@ describe('ConfigFile', () => {
     await save({ pollIntervalSeconds: 60 });
     await poll();
     expect(file.config.pollIntervalSeconds).toBe(60);
-    expect(file.status).toEqual({ state: 'ok', problems: null, fallback: null });
+    expect(file.status).toMatchObject({ state: 'ok', problems: null, fallback: null });
 
     await rm(path);
     await poll();
@@ -192,6 +212,179 @@ describe('ConfigFile', () => {
     expect(handle.hasRef()).toBe(false);
     file.close();
     timeout.mockRestore();
+  });
+});
+
+describe('ConfigFile.update', () => {
+  const add =
+    (name: string) =>
+    (current: Config): Partial<Config> => ({
+      maintainedRepositories: [...current.maintainedRepositories, name],
+    });
+
+  it('sets the keys of the edit, keeps the others as written, and applies the result at once', async () => {
+    await save('{"port": 4700,\n  "maintainedRepositories": ["octo-org/widgets"]}');
+    const changes: boolean[] = [];
+    const { file, clock } = await watched(path, ({ configChanged }) => changes.push(configChanged));
+
+    const update = await file.update(add('octo-org/gadgets'));
+
+    expect(update).toMatchObject({
+      kind: 'saved',
+      config: { port: 4700, maintainedRepositories: ['octo-org/widgets', 'octo-org/gadgets'] },
+    });
+    // Defaults are not written for the keys the file leaves out.
+    expect(await readFile(path, 'utf8')).toBe(
+      '{\n  "port": 4700,\n  "maintainedRepositories": [\n    "octo-org/widgets",\n    "octo-org/gadgets"\n  ]\n}\n',
+    );
+    expect(file.config.maintainedRepositories).toEqual(['octo-org/widgets', 'octo-org/gadgets']);
+    expect(file.status).toMatchObject({
+      state: 'ok',
+      maintainedRepositories: ['octo-org/widgets', 'octo-org/gadgets'],
+    });
+    expect(changes).toEqual([true]);
+    expect(logs.at(-1)).toBe(`Saved the configuration to ${path}.`);
+
+    // The watcher then finds what was written: nothing more to apply.
+    clock.fire();
+    await file.settled();
+    clock.fire();
+    await file.settled();
+    expect(changes).toEqual([true]);
+    expect(await readdir(dir)).toEqual(['config.json']);
+    file.close();
+  });
+
+  it('creates the file, and its directory, when there is none', async () => {
+    const nested = join(dir, 'not', 'yet', 'config.json');
+    const file = new ConfigFile(nested, { log });
+    await file.load();
+
+    expect(await file.update(add('octo-org/widgets'))).toMatchObject({ kind: 'saved' });
+    expect(JSON.parse(await readFile(nested, 'utf8'))).toEqual({
+      maintainedRepositories: ['octo-org/widgets'],
+    });
+    expect(file.status.state).toBe('ok');
+  });
+
+  it('edits the file as it is now, not the configuration in use', async () => {
+    await save({ pollIntervalSeconds: 30 });
+    const file = new ConfigFile(path, { log });
+    await file.load();
+    // Saved by hand a moment ago: not applied yet.
+    await save({ pollIntervalSeconds: 60, excludedRepositories: ['octo-org/noisy'] });
+
+    await file.update(add('octo-org/widgets'));
+
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+      pollIntervalSeconds: 60,
+      excludedRepositories: ['octo-org/noisy'],
+      maintainedRepositories: ['octo-org/widgets'],
+    });
+    expect(file.config.pollIntervalSeconds).toBe(60);
+  });
+
+  it('leaves the file alone when the edit has nothing to change', async () => {
+    await save('{ "port": 4700 }');
+    const file = new ConfigFile(path, { log });
+    await file.load();
+
+    expect(await file.update(() => null)).toMatchObject({
+      kind: 'unchanged',
+      config: { port: 4700 },
+    });
+    expect(await readFile(path, 'utf8')).toBe('{ "port": 4700 }');
+  });
+
+  it('refuses to rewrite a file that has problems', async () => {
+    await save('{ "port": "80" }');
+    const file = new ConfigFile(path, { log });
+    await file.load();
+    expect(file.status.editing).toBe('blocked');
+
+    expect(await file.update(add('octo-org/widgets'))).toEqual({
+      kind: 'refused',
+      reason: 'invalid',
+      message:
+        'The configuration file has problems; fix them first:\nport: expected an integer between 1 and 65535, got "80"',
+    });
+    expect(await readFile(path, 'utf8')).toBe('{ "port": "80" }');
+  });
+
+  it('refuses an edit that would make the file invalid', async () => {
+    const file = new ConfigFile(path, { log });
+    await file.load();
+
+    expect(await file.update(() => ({ port: 0 }))).toMatchObject({
+      kind: 'refused',
+      reason: 'invalid',
+    });
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('never writes in read-only mode', async () => {
+    const file = new ConfigFile(path, { log, readOnly: true });
+    await file.load();
+    expect(file.status.editing).toBe('off');
+
+    expect(await file.update(add('octo-org/widgets'))).toMatchObject({
+      kind: 'refused',
+      reason: 'read_only',
+    });
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  // Root writes anywhere, whatever the permissions.
+  it.skipIf(process.getuid?.() === 0)(
+    'reports a file that cannot be written, without leaving a temporary file',
+    async () => {
+      const locked = join(dir, 'locked');
+      await mkdir(locked);
+      await writeFile(join(locked, 'config.json'), '{}');
+      await chmod(locked, 0o555);
+      const file = new ConfigFile(join(locked, 'config.json'), { log });
+      await file.load();
+
+      try {
+        expect(await file.update(add('octo-org/widgets'))).toEqual({
+          kind: 'refused',
+          reason: 'unwritable',
+          message: 'The configuration file could not be written (EACCES).',
+        });
+        expect(await readdir(locked)).toEqual(['config.json']);
+        expect(file.config.maintainedRepositories).toEqual([]);
+      } finally {
+        await chmod(locked, 0o755);
+      }
+    },
+  );
+
+  it('writes through a symbolic link, keeping the link and the permissions of its target', async () => {
+    const target = join(dir, 'dotfiles.json');
+    await writeFile(target, '{}', { mode: 0o600 });
+    await symlink(target, path);
+    const file = new ConfigFile(path, { log });
+    await file.load();
+
+    await file.update(add('octo-org/widgets'));
+
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({
+      maintainedRepositories: ['octo-org/widgets'],
+    });
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
+  });
+
+  it('runs concurrent updates one after the other, losing none', async () => {
+    const file = new ConfigFile(path, { log });
+    await file.load();
+
+    await Promise.all(['o/a', 'o/b', 'o/c'].map((name) => file.update(add(name))));
+
+    expect(file.config.maintainedRepositories).toEqual(['o/a', 'o/b', 'o/c']);
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+      maintainedRepositories: ['o/a', 'o/b', 'o/c'],
+    });
   });
 });
 

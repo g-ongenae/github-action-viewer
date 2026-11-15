@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CONFIG, formatConfigIssues, parseConfig, type Config } from '../core/config.ts';
 import type { Log } from './log.ts';
@@ -71,8 +71,34 @@ export async function readConfigFile(path: string): Promise<ConfigRead> {
     : { kind: 'invalid', problems: formatConfigIssues(result.issues), text };
 }
 
+/**
+ * Changes to make to the file: the keys to set, given the configuration the file holds right now
+ * (the defaults for a missing file); null to leave the file alone.
+ */
+export type ConfigEdit = (current: Config) => Partial<Config> | null;
+
+/** The outcome of {@link ConfigFile.update}. */
+export type ConfigUpdate =
+  /** The file was rewritten and `config` applies from now on. */
+  | { readonly kind: 'saved'; readonly config: Config }
+  /** The edit had nothing to change; `config` is what the file holds. */
+  | { readonly kind: 'unchanged'; readonly config: Config }
+  | {
+      readonly kind: 'refused';
+      /**
+       * `read_only`: the file is never written (see {@link ConfigFileOptions.readOnly});
+       * `invalid`: the file has problems, and is left for its owner to fix;
+       * `unwritable`: writing failed.
+       */
+      readonly reason: 'read_only' | 'invalid' | 'unwritable';
+      /** For a human; `invalid` lists the problems, one per line. */
+      readonly message: string;
+    };
+
 export interface ConfigFileOptions {
   readonly log: Log;
+  /** Never write the file: {@link ConfigFile.update} is refused. */
+  readonly readOnly?: boolean;
   /** Called after a reload changed the configuration in use or its status. */
   readonly onChange?: (change: { readonly configChanged: boolean }) => void;
   /** Time between two reads while watching; default {@link CONFIG_POLL_MS}. */
@@ -81,12 +107,6 @@ export interface ConfigFileOptions {
   readonly clock?: Clock;
 }
 
-/**
- * The configuration file, kept up to date: {@link watch} re-reads it whenever it changes, so that
- * edits apply without a restart. A missing file means the defaults; an invalid file keeps the last
- * valid configuration (the defaults if there never was one) and is reported through
- * {@link status}, for the page.
- */
 /**
  * The configuration file, kept up to date: {@link watch} re-reads it every second or so, so that
  * edits apply without a restart. A missing file means the defaults; an invalid file keeps the last
@@ -97,13 +117,15 @@ export interface ConfigFileOptions {
  * symbolic links (a config kept in a dotfiles repository), survives editors that save by renaming
  * a new file over the old one, deletion and re-creation, and works when neither the file nor its
  * directory exists yet. The file is tiny, so the cost is negligible.
+ *
+ * {@link update} is the only way the server writes the file, for the page's edits.
  */
 export class ConfigFile {
   readonly path: string;
   readonly #options: ConfigFileOptions;
   readonly #clock: Clock;
   #config: Config = DEFAULT_CONFIG;
-  #status: ConfigStatus = { state: 'missing', problems: null, fallback: null };
+  #status: FileStatus = { state: 'missing', problems: null, fallback: null };
   /** Whether a valid file was ever read: what an invalid file falls back to. */
   #hadValid = false;
   /** What the applied read found (see `describe`); null before the first read. */
@@ -113,6 +135,8 @@ export class ConfigFile {
   #timer: unknown = null;
   #watching = false;
   #polling: Promise<void> = Promise.resolve();
+  /** The latest {@link update}: the next one waits for it, so that no edit is lost. */
+  #updating: Promise<unknown> = Promise.resolve();
 
   constructor(path: string, options: ConfigFileOptions) {
     this.path = path;
@@ -126,7 +150,16 @@ export class ConfigFile {
   }
 
   get status(): ConfigStatus {
-    return this.#status;
+    return {
+      ...this.#status,
+      maintainedRepositories: this.#config.maintainedRepositories,
+      editing:
+        this.#options.readOnly === true
+          ? 'off'
+          : this.#status.state === 'invalid'
+            ? 'blocked'
+            : 'on',
+    };
   }
 
   /** Reads the file and logs what was found. */
@@ -147,6 +180,18 @@ export class ConfigFile {
     }
     this.#watching = true;
     this.#arm();
+  }
+
+  /**
+   * Edits the file and applies the result at once, without waiting for the next read. The edit is
+   * computed from the file as it is now, not from the configuration in use, so that a change
+   * saved a moment ago is never overwritten; only the keys it returns are set, the others (and
+   * their order) are kept. The file is rewritten as indented JSON. Updates run one at a time.
+   */
+  update(edit: ConfigEdit): Promise<ConfigUpdate> {
+    const update = this.#updating.then(() => this.#update(edit));
+    this.#updating = update.catch(() => undefined);
+    return update;
   }
 
   /** Stops watching. */
@@ -187,7 +232,53 @@ export class ConfigFile {
     this.#arm();
   }
 
-  #apply(read: ConfigRead, found: string): void {
+  async #update(edit: ConfigEdit): Promise<ConfigUpdate> {
+    if (this.#options.readOnly === true) {
+      return {
+        kind: 'refused',
+        reason: 'read_only',
+        message: 'The viewer runs in read-only mode: the configuration file is not changed.',
+      };
+    }
+    const read = await readConfigFile(this.path);
+    if (read.kind === 'invalid') {
+      return {
+        kind: 'refused',
+        reason: 'invalid',
+        message: `The configuration file has problems; fix them first:\n${read.problems}`,
+      };
+    }
+    const current = read.kind === 'ok' ? read.config : DEFAULT_CONFIG;
+    const changes = edit(current);
+    if (changes === null) {
+      return { kind: 'unchanged', config: current };
+    }
+    // What the file holds, not `current`: defaults are not written for the keys it leaves out.
+    const next = {
+      ...(read.kind === 'ok' ? (JSON.parse(read.text) as Record<string, unknown>) : {}),
+      ...changes,
+    };
+    const parsed = parseConfig(next);
+    if (!parsed.ok) {
+      return { kind: 'refused', reason: 'invalid', message: formatConfigIssues(parsed.issues) };
+    }
+    const text = `${JSON.stringify(next, null, 2)}\n`;
+    try {
+      await replaceFile(this.path, text);
+    } catch (error) {
+      return {
+        kind: 'refused',
+        reason: 'unwritable',
+        message: `The configuration file could not be written (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`,
+      };
+    }
+    const saved: ConfigRead = { kind: 'ok', config: parsed.config, text };
+    this.#pending = null;
+    this.#apply(saved, describe(saved), 'Saved');
+    return { kind: 'saved', config: parsed.config };
+  }
+
+  #apply(read: ConfigRead, found: string, verb?: string): void {
     const first = this.#applied === null;
     this.#applied = found;
     const previousConfig = this.#config;
@@ -202,7 +293,11 @@ export class ConfigFile {
         this.#config = read.config;
         this.#hadValid = true;
         this.#status = { state: 'ok', problems: null, fallback: null };
-        log(`${first ? 'Loaded' : 'Reloaded'} the configuration from ${this.path}.`);
+        log(
+          verb === undefined
+            ? `${first ? 'Loaded' : 'Reloaded'} the configuration from ${this.path}.`
+            : `${verb} the configuration to ${this.path}.`,
+        );
         break;
       case 'invalid': {
         const fallback = this.#hadValid ? 'last_valid' : 'defaults';
@@ -219,6 +314,36 @@ export class ConfigFile {
         configChanged: JSON.stringify(previousConfig) !== JSON.stringify(this.#config),
       });
     }
+  }
+}
+
+/** The part of the status that comes from reading the file. */
+type FileStatus = Pick<ConfigStatus, 'state' | 'problems' | 'fallback'>;
+
+/**
+ * Replaces the content of `path` in one step (a temporary file renamed over it), so that neither
+ * a reader nor a crash ever finds half a file. A symbolic link is followed and kept: the file it
+ * points to is the one replaced, with its permissions. Missing directories are created.
+ */
+async function replaceFile(path: string, text: string): Promise<void> {
+  let target = path;
+  let mode: number | null = null;
+  try {
+    target = await realpath(path);
+    mode = (await stat(target)).mode & 0o777;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+    await mkdir(dirname(path), { recursive: true });
+  }
+  const temporary = `${target}.${String(process.pid)}.tmp`;
+  try {
+    await writeFile(temporary, text, mode === null ? {} : { mode });
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
   }
 }
 

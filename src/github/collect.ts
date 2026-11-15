@@ -29,6 +29,7 @@ import {
   type PullRequestReference,
   type RepositoryInfo,
 } from './mapping.ts';
+import { repositoryPath } from './repositories.ts';
 
 /** Runs fetched per watched repository: the most recent page, whatever their branch. */
 export const RECENT_RUNS = 100;
@@ -692,11 +693,6 @@ function headCommitRuns(
     { head_sha: pullRequest.headSha, per_page: REF_RUNS },
     parseWorkflowRunList,
   );
-}
-
-function repositoryPath(fullName: string): string {
-  const [owner = '', name = ''] = fullName.split('/');
-  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
 }
 
 function repositoryProblem(repository: string, error: GitHubError): Problem {

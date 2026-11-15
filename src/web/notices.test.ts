@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { collectNotices, emptyState } from './notices.ts';
-import { iso, NOW, payload, repositoryView, lineView, snapshot, status } from './test-fixtures.ts';
+import {
+  configStatus,
+  iso,
+  lineView,
+  NOW,
+  payload,
+  repositoryView,
+  snapshot,
+  status,
+} from './test-fixtures.ts';
 
 describe('collectNotices', () => {
   it('has nothing to say about a healthy payload', () => {
@@ -11,11 +20,11 @@ describe('collectNotices', () => {
   it('shows the configuration problems verbatim, one per line', () => {
     const [notice] = collectNotices(
       payload([], {
-        config: {
+        config: configStatus({
           state: 'invalid',
           problems: 'port: bad\npollIntervalSeconds: bad',
           fallback: 'defaults',
-        },
+        }),
       }),
       NOW,
     );
@@ -109,13 +118,19 @@ describe('emptyState', () => {
   });
 
   it('explains what is watched when there is nothing to show, pointing to config.json', () => {
-    const state = emptyState(
-      payload([], { config: { state: 'missing', problems: null, fallback: null } }),
-      'live',
-    );
+    const state = emptyState(payload([], { config: configStatus({ state: 'missing' }) }), 'live');
     expect(state?.key).toBe('no-repositories');
     expect(JSON.stringify(state)).toContain('"code":"config.json"');
     expect(JSON.stringify(state)).toContain('There is no ');
+    expect(JSON.stringify(state)).toContain('“Add repository”');
+  });
+
+  it('only points to “Add repository” when the page may edit the watch list', () => {
+    for (const editing of ['blocked', 'off'] as const) {
+      const state = emptyState(payload([], { config: configStatus({ editing }) }), 'live');
+      expect(JSON.stringify(state)).not.toContain('Add repository');
+      expect(JSON.stringify(state)).toContain('To change what is watched, edit ');
+    }
   });
 
   it('is null when there are repositories', () => {

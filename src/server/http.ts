@@ -9,8 +9,9 @@ import {
 import type { AddressInfo } from 'node:net';
 import { extname, join, sep } from 'node:path';
 import type { Log } from './log.ts';
-import type { EventName } from './payload.ts';
+import type { ApiError, EventName } from './payload.ts';
 import type { PayloadSource } from './store.ts';
+import { WatchListError, type WatchListEditor } from './watch-list-editor.ts';
 
 /** The only interface the server listens on: never reachable from another machine. */
 export const HOST = '127.0.0.1';
@@ -20,6 +21,9 @@ export const HEARTBEAT_MS = 15_000;
 
 /** Concurrent event-stream clients; more are refused with 503. */
 export const MAX_EVENT_CLIENTS = 16;
+
+/** Prefix of the routes that add (`PUT`) and remove (`DELETE`) a maintained repository. */
+export const MAINTAINED_PREFIX = '/api/maintained-repositories/';
 
 /** A client that does not read its stream is dropped once this much is waiting for it. */
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
@@ -76,6 +80,11 @@ export interface ViewerServerOptions {
    * `https://` origins are accepted too. Loopback names are always accepted.
    */
   readonly allowedHosts?: readonly string[];
+  /**
+   * Lets the page edit the list of maintained repositories; without it the server is read-only
+   * and the routes below do not exist.
+   */
+  readonly watchList?: WatchListEditor;
 }
 
 /**
@@ -84,6 +93,11 @@ export interface ViewerServerOptions {
  * name it by a loopback host name or an allowed host, so that other web pages open in the browser
  * cannot read it (see the README's security section). Opening the page itself from a link on
  * another site is a navigation, not a read, and is let through.
+ *
+ * With a {@link ViewerServerOptions.watchList}, it also answers `GET /api/repositories` and
+ * `PUT` and `DELETE /api/maintained-repositories/{owner}/{name}`, the only routes that change
+ * anything. They take no body, and need an `Origin` header naming this server: a browser sends it
+ * with every `PUT` and `DELETE`, and no other site can forge it.
  */
 export class ViewerServer {
   readonly #options: ViewerServerOptions;
@@ -160,21 +174,27 @@ export class ViewerServer {
       sendText(response, 403, 'Forbidden');
       return;
     }
+    // The path as sent, without the query; never parsed against a base URL, which would accept
+    // `//other-host/…` as an absolute URL.
+    const path = (request.url ?? '').split('?', 1)[0] ?? '';
     const method = request.method ?? '';
+    const { watchList } = this.#options;
+    if (watchList !== undefined && path.startsWith(MAINTAINED_PREFIX)) {
+      await this.#editWatchList(watchList, method, path, request, response);
+      return;
+    }
     if (method !== 'GET' && method !== 'HEAD') {
       sendText(response, 405, 'Method Not Allowed', { Allow: 'GET, HEAD' });
       return;
     }
-
-    // The path as sent, without the query; never parsed against a base URL, which would accept
-    // `//other-host/…` as an absolute URL.
-    const path = (request.url ?? '').split('?', 1)[0] ?? '';
     if (!path.startsWith('/')) {
       sendText(response, 400, 'Bad Request');
       return;
     }
 
-    if (path === '/api/snapshot') {
+    if (path === '/api/repositories' && watchList !== undefined) {
+      await answerJson(response, () => watchList.catalogue());
+    } else if (path === '/api/snapshot') {
       send(response, 200, this.#options.source.payloadJson(), {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -186,6 +206,35 @@ export class ViewerServer {
     } else {
       await this.#serveStatic(path, response);
     }
+  }
+
+  /**
+   * `PUT` adds the repository named by the rest of the path to the maintained repositories,
+   * `DELETE` removes it. The name is taken as sent: its characters never need encoding.
+   */
+  async #editWatchList(
+    watchList: WatchListEditor,
+    method: string,
+    path: string,
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    if (method !== 'PUT' && method !== 'DELETE') {
+      sendText(response, 405, 'Method Not Allowed', { Allow: 'PUT, DELETE' });
+      return;
+    }
+    // Stricter than for reads: the request must say it comes from the page.
+    const origin = request.headers.origin;
+    if (origin === undefined || !this.#origins.has(origin.toLowerCase())) {
+      sendText(response, 403, 'Forbidden');
+      return;
+    }
+    // No body is expected: whatever was sent is discarded unread.
+    request.resume();
+    const repository = path.slice(MAINTAINED_PREFIX.length);
+    await answerJson(response, () =>
+      method === 'PUT' ? watchList.add(repository) : watchList.remove(repository),
+    );
   }
 
   /**
@@ -349,6 +398,32 @@ function send(
     'Content-Length': Buffer.byteLength(body),
   });
   response.end(response.req.method === 'HEAD' ? undefined : body);
+}
+
+/**
+ * Answers with the JSON of what `produce` resolves to, or with an {@link ApiError} for a
+ * {@link WatchListError}: its message is written for the reader. Anything else is a bug, left to
+ * the caller, which answers a bare 500.
+ */
+async function answerJson(
+  response: ServerResponse,
+  produce: () => Promise<unknown>,
+): Promise<void> {
+  let status = 200;
+  let body: unknown;
+  try {
+    body = await produce();
+  } catch (error) {
+    if (!(error instanceof WatchListError)) {
+      throw error;
+    }
+    status = error.status;
+    body = { error: error.message } satisfies ApiError;
+  }
+  send(response, status, JSON.stringify(body), {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
 }
 
 /** A short, generic plain-text answer: errors never carry details. */

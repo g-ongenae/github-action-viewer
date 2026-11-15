@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONTENT_SECURITY_POLICY, isValidHost, ViewerServer } from './http.ts';
-import type { Heartbeat } from './payload.ts';
+import type { Heartbeat, RepositoryCatalogue, WatchListChange } from './payload.ts';
 import type { PayloadSource } from './store.ts';
+import { WatchListError, type WatchListEditor } from './watch-list-editor.ts';
 
 /** A payload source the test drives by hand. */
 class FakeSource implements PayloadSource {
@@ -365,5 +366,198 @@ describe('ViewerServer', () => {
   it('fails to listen on a port in use', async () => {
     const other = new ViewerServer({ source, staticRoot: root, log: () => undefined });
     await expect(other.listen(port)).rejects.toMatchObject({ code: 'EADDRINUSE' });
+  });
+});
+
+/** An editor that records what it was asked, and answers or fails as the test says. */
+class FakeEditor implements WatchListEditor {
+  readonly calls: string[] = [];
+  failure: Error | null = null;
+
+  catalogue(): Promise<RepositoryCatalogue> {
+    this.calls.push('catalogue');
+    return this.#answer({ repositories: [{ fullName: 'o/r', private: true }], complete: true });
+  }
+
+  add(repository: string): Promise<WatchListChange> {
+    this.calls.push(`add ${repository}`);
+    return this.#answer({ repository, changed: true, maintainedRepositories: [repository] });
+  }
+
+  remove(repository: string): Promise<WatchListChange> {
+    this.calls.push(`remove ${repository}`);
+    return this.#answer({ repository, changed: true, maintainedRepositories: [] });
+  }
+
+  #answer<T>(value: T): Promise<T> {
+    return this.failure === null ? Promise.resolve(value) : Promise.reject(this.failure);
+  }
+}
+
+describe('ViewerServer: editing the watch list', () => {
+  let editor: FakeEditor;
+  const origin = (): Record<string, string> => ({ origin: `http://${host()}` });
+
+  beforeEach(async () => {
+    await server.close();
+    editor = new FakeEditor();
+    server = new ViewerServer({
+      source,
+      staticRoot: root,
+      log: (line) => logs.push(line),
+      watchList: editor,
+      allowedHosts: ['viewer.example.ts.net'],
+    });
+    port = await server.listen(0);
+  });
+
+  it('has no such routes without an editor', async () => {
+    await server.close();
+    server = new ViewerServer({ source, staticRoot: root, log: () => undefined });
+    port = await server.listen(0);
+
+    expect(await send('/api/repositories')).toMatchObject({ status: 404, body: 'Not Found\n' });
+    const response = await send('/api/maintained-repositories/o/r', {
+      method: 'PUT',
+      headers: origin(),
+    });
+    expect(response).toMatchObject({ status: 405, body: 'Method Not Allowed\n' });
+    expect(response.headers.allow).toBe('GET, HEAD');
+  });
+
+  it('serves the repositories offered to add', async () => {
+    const response = await send('/api/repositories');
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      repositories: [{ fullName: 'o/r', private: true }],
+      complete: true,
+    });
+    expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expectSecurityHeaders(response.headers);
+  });
+
+  it('adds a repository on PUT and removes it on DELETE, taking the name from the path', async () => {
+    const added = await send('/api/maintained-repositories/Octo-Org/my.widgets_2?x=1', {
+      method: 'PUT',
+      headers: origin(),
+    });
+    expect(added.status).toBe(200);
+    expect(JSON.parse(added.body)).toEqual({
+      repository: 'Octo-Org/my.widgets_2',
+      changed: true,
+      maintainedRepositories: ['Octo-Org/my.widgets_2'],
+    });
+    expect(added.headers['cache-control']).toBe('no-store');
+    expectSecurityHeaders(added.headers);
+
+    const removed = await send('/api/maintained-repositories/Octo-Org/my.widgets_2', {
+      method: 'DELETE',
+      headers: { origin: `http://localhost:${String(port)}`, host: `localhost:${String(port)}` },
+    });
+    expect(removed.status).toBe(200);
+    expect(editor.calls).toEqual(['add Octo-Org/my.widgets_2', 'remove Octo-Org/my.widgets_2']);
+  });
+
+  it('leaves the name to the editor to judge, never decoding it', async () => {
+    await send('/api/maintained-repositories/o/r/extra', { method: 'PUT', headers: origin() });
+    await send('/api/maintained-repositories/o%2Fr', { method: 'PUT', headers: origin() });
+    await send('/api/maintained-repositories/', { method: 'DELETE', headers: origin() });
+
+    expect(editor.calls).toEqual(['add o/r/extra', 'add o%2Fr', 'remove ']);
+  });
+
+  it('answers a refusal of the editor with its status and its message', async () => {
+    editor.failure = new WatchListError(404, 'o/r was not found on GitHub.');
+
+    for (const response of [
+      await send('/api/maintained-repositories/o/r', { method: 'PUT', headers: origin() }),
+      await send('/api/repositories'),
+    ]) {
+      expect(response.status).toBe(404);
+      expect(JSON.parse(response.body)).toEqual({ error: 'o/r was not found on GitHub.' });
+      expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
+      expectSecurityHeaders(response.headers);
+    }
+  });
+
+  it('answers a bare 500 to anything else, and logs it', async () => {
+    editor.failure = new Error('secret detail');
+
+    const response = await send('/api/maintained-repositories/o/r', {
+      method: 'PUT',
+      headers: origin(),
+    });
+
+    expect(response).toMatchObject({ status: 500, body: 'Internal Server Error\n' });
+    expect(logs.join('\n')).toContain('secret detail');
+  });
+
+  it.each([
+    ['no Origin', {}],
+    ['the Origin of another site', { origin: 'https://attacker.example' }],
+    ['another port of this machine', { origin: 'http://127.0.0.1:1' }],
+    ['a null Origin', { origin: 'null' }],
+  ])('refuses a change with %s', async (_, headers) => {
+    for (const method of ['PUT', 'DELETE']) {
+      const response = await send('/api/maintained-repositories/o/r', { method, headers });
+      expect(response).toMatchObject({ status: 403, body: 'Forbidden\n' });
+    }
+    expect(editor.calls).toEqual([]);
+  });
+
+  it('refuses a change the browser marks as coming from another site', async () => {
+    const response = await send('/api/maintained-repositories/o/r', {
+      method: 'PUT',
+      headers: { ...origin(), 'sec-fetch-site': 'cross-site' },
+    });
+
+    expect(response.status).toBe(403);
+    expect(
+      (await send('/api/repositories', { headers: { 'sec-fetch-site': 'same-site' } })).status,
+    ).toBe(403);
+    expect(editor.calls).toEqual([]);
+  });
+
+  it('refuses a change sent to another host name (DNS rebinding)', async () => {
+    const response = await send('/api/maintained-repositories/o/r', {
+      method: 'PUT',
+      headers: { host: 'attacker.example', origin: 'http://attacker.example' },
+    });
+
+    expect(response.status).toBe(403);
+    expect(editor.calls).toEqual([]);
+  });
+
+  it('accepts a change from the page served under an allowed host', async () => {
+    const response = await send('/api/maintained-repositories/o/r', {
+      method: 'PUT',
+      headers: { host: 'viewer.example.ts.net', origin: 'https://viewer.example.ts.net' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(editor.calls).toEqual(['add o/r']);
+  });
+
+  it.each(['GET', 'HEAD', 'POST', 'PATCH', 'OPTIONS'])(
+    'answers 405 to %s on a maintained repository',
+    async (method) => {
+      const response = await send('/api/maintained-repositories/o/r', {
+        method,
+        headers: origin(),
+      });
+      expect(response.status).toBe(405);
+      expect(response.headers.allow).toBe('PUT, DELETE');
+      expect(editor.calls).toEqual([]);
+    },
+  );
+
+  it('still answers 405 to changes anywhere else', async () => {
+    for (const path of ['/api/repositories', '/api/snapshot', '/']) {
+      const response = await send(path, { method: 'PUT', headers: origin() });
+      expect(response.status).toBe(405);
+      expect(response.headers.allow).toBe('GET, HEAD');
+    }
   });
 });

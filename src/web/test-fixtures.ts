@@ -2,7 +2,7 @@
 
 import { isActiveRunState, summariseRunStates, type RunState } from '../core/run-state.ts';
 import type { LineView, RepositoryView, RunView, Snapshot } from '../core/snapshot.ts';
-import type { Heartbeat, PagePayload, ServerStatus } from '../server/payload.ts';
+import type { ConfigStatus, Heartbeat, PagePayload, ServerStatus } from '../server/payload.ts';
 
 export const NOW = Date.parse('2026-11-13T12:00:00Z');
 
@@ -111,6 +111,17 @@ export function snapshot(
   };
 }
 
+export function configStatus(overrides: Partial<ConfigStatus> = {}): ConfigStatus {
+  return {
+    state: 'ok',
+    problems: null,
+    fallback: null,
+    maintainedRepositories: [],
+    editing: 'on',
+    ...overrides,
+  };
+}
+
 export function status(overrides: Partial<ServerStatus> = {}): ServerStatus {
   return {
     lastCheckedAt: iso(0.1),
@@ -120,7 +131,7 @@ export function status(overrides: Partial<ServerStatus> = {}): ServerStatus {
     staleRepositories: [],
     pollInterval: { baseSeconds: 15, currentSeconds: 15, reason: 'base' },
     rateLimits: { core: null, search: null, retryAt: null },
-    config: { state: 'ok', problems: null, fallback: null },
+    config: configStatus(),
     ...overrides,
   };
 }
@@ -150,7 +161,11 @@ export function heartbeat(overrides: Partial<Heartbeat> = {}): Heartbeat {
 
 /** The skeleton of index.html that the renderer fills. */
 export const PAGE_SKELETON = `
-  <header><h1>My GitHub Actions</h1><p id="status"></p></header>
+  <header>
+    <h1>My GitHub Actions</h1>
+    <p id="status"></p>
+    <button id="add-repository" type="button" hidden>Add repository</button>
+  </header>
   <ul id="notices" hidden></ul>
   <main><div id="empty"></div><div id="repositories"></div></main>
   <p id="announcer" role="status"></p>

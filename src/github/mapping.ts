@@ -52,6 +52,22 @@ export function parseRepositoryList(body: unknown): RepositoryInfo[] {
   return readObjects(body).map(toRepositoryInfo);
 }
 
+/** A repository the token can read, as offered to add to the watch list. */
+export interface AccessibleRepository {
+  readonly fullName: string;
+  readonly private: boolean;
+}
+
+/** A page of `GET /user/repos`, without the archived and disabled repositories. */
+export function parseAccessibleRepositoryList(body: unknown): AccessibleRepository[] {
+  return readObjects(body).flatMap((repository) => {
+    const info = toRepositoryInfo(repository);
+    return info.inactive
+      ? []
+      : [{ fullName: info.fullName, private: repository.optionalBoolean('private') === true }];
+  });
+}
+
 /** A page of `GET /search/issues`. */
 export interface SearchPage {
   readonly pullRequests: PullRequestReference[];
