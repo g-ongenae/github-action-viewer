@@ -4,7 +4,7 @@ A small local web page that shows, in real time, the GitHub Actions runs I care 
 
 - runs linked to my open pull requests (in any repository),
 - runs in my own repositories,
-- runs in repositories I maintain (an editable list).
+- runs in any other repository I add, public or private, of any organisation or account.
 
 One section per repository, one line per branch or pull request: state, ref, date, commit title
 and author. It updates by itself, and the tab title and icon say whether something is running or
@@ -24,7 +24,7 @@ pnpm start                 # then open http://127.0.0.1:4680/
 That is all if the [GitHub CLI](https://cli.github.com/) is logged in (`gh auth login`); otherwise
 set `GITHUB_TOKEN` (see [Token](#token)). Without a configuration file the page shows your own
 repositories pushed to in the last 30 days and every repository where you have an open pull
-request; add the repositories you maintain in [`config.json`](#configuration).
+request; add others with the page's [**Add repository**](#adding-repositories) button.
 
 ```sh
 pnpm start --port 4700 --config ~/my-viewer.json
@@ -73,6 +73,35 @@ A repository the server could not refresh keeps its earlier lines, marked by a d
 Actions", and the tab icon is green (all quiet), blue (running or waiting), red (failed) or grey
 (disconnected).
 
+## Adding repositories
+
+**Add repository**, next to the status line, watches one more repository: any repository the token
+can read, public or private, whoever owns it (another organisation, another account).
+
+![The “Add a repository” dialog in demo mode: a field, the repositories offered below it marked public or private, and the repositories added so far, each with a Remove button](docs/add-repository.png)
+
+- Below the field are the repositories GitHub lists for you: the ones you own, collaborate on or
+  reach through an organisation, most recently pushed first, without the archived ones. Typing
+  narrows the list; click a repository, or reach it with the arrow keys, to add it.
+- Any other repository, such as someone else's public one, is added by its full name: type
+  `owner/name` (or paste its GitHub address) and press Enter. The server checks with GitHub that
+  the token can read it, and says so if it cannot.
+- **Added repositories** lists what was added so far, each with a **Remove** button.
+
+A repository that is added shows its default branch and your open pull requests, and its other
+branches and pull requests while their runs are active (see [Configuration](#configuration)). It
+only appears on the page once it has a workflow run to show.
+
+Adding and removing edit `maintainedRepositories` in [`config.json`](#configuration), which is
+created if there is none; editing that key by hand does the same. The file is rewritten as
+indented JSON, keeping its other keys and their order. Adding a repository listed in
+`excludedRepositories` also takes it off that list. While the file has problems the dialog changes
+nothing: fix the file first. Start the server with `--read-only` to remove the button and never
+have the file written.
+
+If a private repository of an organisation is neither offered nor found, the token cannot read it
+(see [Token](#token)).
+
 ## Configuration
 
 The viewer reads a `config.json` file. Every key is optional; [`config.example.json`](config.example.json)
@@ -82,7 +111,7 @@ compared case-insensitively.
 
 | Key                               | Default | Meaning                                                                                                                           |
 | --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `maintainedRepositories`          | `[]`    | Repositories to watch in addition to your own, e.g. `["example-org/example-service"]`.                                            |
+| `maintainedRepositories`          | `[]`    | Repositories to watch in addition to your own, e.g. `["example-org/example-service"]`; the page's **Add repository** edits it.    |
 | `excludedRepositories`            | `[]`    | Repositories never shown, even if you own them, maintain them or have a pull request there.                                       |
 | `includeOwnRepositories`          | `true`  | Watch the repositories you own.                                                                                                   |
 | `ownRepositoriesPushedWithinDays` | `30`    | Only watch your own repositories pushed to within this many days (an integer ≥ 1), to skip dormant ones; `null` watches them all. |
@@ -110,7 +139,9 @@ dotfiles repository), and the file and its directory may be created after the se
 
 The server collects at the configured interval, never two collections at once. An unchanged
 collection costs nothing (GitHub answers `304 Not Modified`), but each repository with a running
-workflow costs about one request per poll. When the latest collection's cost, repeated until the
+workflow costs about one request per poll. Opening the **Add repository** dialog lists your
+repositories (one request per hundred, free again while the list has not changed, and at most
+once a minute), and adding one costs one more request. When the latest collection's cost, repeated until the
 quota resets, would leave less than 20 % of the hourly quota for your other tools, the interval is
 stretched to fit (and shrinks back when activity drops). After a rate limit, nothing is sent until
 GitHub allows it.
@@ -132,11 +163,35 @@ The server listens on `127.0.0.1` only. All responses are same-origin; there is 
 | `GET /api/events`   | A [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream. |
 | `GET /…`            | The page's static files, from `dist/web/` (`/` is `index.html`).                               |
 
+and, unless the server runs with `--read-only`, the routes behind the page's
+[**Add repository**](#adding-repositories) dialog:
+
+| Route                                                | Response                                                                      |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `GET /api/repositories`                              | A `RepositoryCatalogue`: the repositories GitHub lists for you, to offer.     |
+| `PUT /api/maintained-repositories/{owner}/{name}`    | Adds the repository to `maintainedRepositories`; answers a `WatchListChange`. |
+| `DELETE /api/maintained-repositories/{owner}/{name}` | Removes it; answers a `WatchListChange`.                                      |
+
+`PUT` and `DELETE` take no body, do nothing when there is nothing to do (`changed: false`), and
+need an `Origin` header naming the server itself, which a browser adds on its own:
+
+```sh
+curl -X PUT -H 'Origin: http://127.0.0.1:4680' \
+  http://127.0.0.1:4680/api/maintained-repositories/example-org/example-service
+```
+
+Their errors are JSON, `{ "error": "…" }`, with a message for the reader: `400` for something
+that is not an `owner/name`, `404` for a repository GitHub does not find or the token cannot
+read, `403` when GitHub denies access (the message says why), `409` while the configuration file
+has problems, `429` during a GitHub rate limit, `502` or `504` when GitHub fails or cannot be
+reached, `500` when the file cannot be written.
+
 The payload is a `PagePayload` ([`src/server/payload.ts`](src/server/payload.ts), types only, so
 the page can import it with `import type`): the core `Snapshot` (null until the first successful
 collection) and a `status` with when data was last checked and last collected successfully,
 whether it is stale and why, the repositories shown from earlier data, the poll interval (base and
-current, and why they differ), the API quotas, and the state of the configuration file.
+current, and why they differ), the API quotas, and the state of the configuration file (with the
+maintained repositories, and whether the page may edit them).
 
 The event stream sends:
 
@@ -147,7 +202,8 @@ The event stream sends:
   than 15 seconds can treat the connection as dead (`EventSource` reconnects by itself).
 
 At most 16 streams are open at once; more get `503`. Other methods than `GET` and `HEAD` get
-`405`, unknown paths `404`, and error bodies are a generic word or two.
+`405` (other than `PUT` and `DELETE` on a maintained repository), unknown paths `404`, and the
+error bodies of these routes are a generic word or two.
 
 ### Behind a reverse proxy
 
@@ -159,6 +215,9 @@ default port). With [Tailscale](https://tailscale.com/kb/1312/serve):
 pnpm start --allowed-host my-machine.my-tailnet.ts.net:4680
 tailscale serve --bg --https 4680 http://127.0.0.1:4680
 ```
+
+Whoever can open the page through the proxy can also add and remove repositories; add
+`--read-only` if they should only look.
 
 ### Security
 
@@ -173,7 +232,13 @@ send requests to `127.0.0.1`. So the server:
   browser marks as cross-site or same-site (`Sec-Fetch-Site`) or that carry a foreign `Origin`, so
   they do not even run. The one exception is opening the page in a tab from a link on another
   site (a top-level navigation, which the other site cannot read);
-- answers only `GET` and `HEAD`, and never sends anything to GitHub but `GET` requests;
+- answers only `GET` and `HEAD`, except for the two routes that add and remove a maintained
+  repository (`PUT` and `DELETE`, none with `--read-only`). These need an `Origin` header naming
+  the server, which browsers add to every `PUT` and `DELETE` and no page can forge; they take no
+  body; and the only thing they can change is the list of repository names in `config.json`, each
+  checked to be an `owner/name`. Another site cannot even send them: a cross-origin `PUT` or
+  `DELETE` starts with a preflight request, which is refused;
+- never sends anything to GitHub but `GET` requests;
 - sends `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
 img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors
 'none'` (no inline code, nothing from elsewhere, no framing), `X-Content-Type-Options: nosniff`,
@@ -194,6 +259,14 @@ The server and `pnpm run snapshot` use the first token found among:
 The token only needs to read: the tool sends nothing but `GET` requests. With a fine-grained token,
 grant read access to _Metadata_, _Pull requests_ and _Actions_ on the repositories to watch.
 
+What the token can read is what the page can show and [add](#adding-repositories). For private
+repositories a classic token needs the `repo` scope (the GitHub CLI's login has it), and a
+fine-grained token only reaches the repositories of the one owner it was created for. An
+organisation can restrict tokens further: with SAML single sign-on the token has to be authorised
+for the organisation, and for the GitHub CLI's login the organisation may have to approve the
+application. GitHub then answers as if the repository did not exist, or with a message that the
+dialog shows.
+
 `pnpm run snapshot` collects the page once and prints it, one line per branch or pull request,
 followed by the number of requests it took and the remaining API quota (`--json` prints the whole
 result as JSON). It reads the same configuration file as the server (`--config` works too).
@@ -211,7 +284,9 @@ pnpm demo --demo-variant first-load    # waiting for the first collection
 ([`src/demo/`](src/demo/)): no token, no configuration file, no request to GitHub. Every run state
 appears, along with a pull request failing while it still runs, a line running on an older commit,
 a draft, long, right-to-left and emoji text, a stale repository, a configuration problem and
-slowed-down polling. Every 30 seconds a running line finishes or starts again, to show live
+slowed-down polling. **Add repository** works too, on a made-up GitHub that knows a dozen
+repositories and keeps the list in memory: an added repository appears with a finished run, and
+any other name is answered like a repository GitHub does not find. Every 30 seconds a running line finishes or starts again, to show live
 updates. Use it to work on the page, to take screenshots, or to see every state. Stop the server to
 see the disconnected state.
 
