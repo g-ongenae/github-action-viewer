@@ -2,7 +2,7 @@
 // and one repository by name, to check it before it is added to the watch list.
 
 import type { GitHubClient, RequestOptions } from './client.ts';
-import { GitHubError } from './errors.ts';
+import { GitHubError, RateLimitError } from './errors.ts';
 import {
   parseAccessibleRepositoryList,
   parseRepository,
@@ -18,6 +18,8 @@ export interface AccessibleRepositories {
   readonly repositories: AccessibleRepository[];
   /** False when a page after the first failed, or the page cap was reached. */
   readonly complete: boolean;
+  /** Set when a rate limit is what cut the list short: nothing should be sent before this time. */
+  readonly retryAt: Date | null;
 }
 
 /** Path of a repository in the API: `/repos/{owner}/{name}`. */
@@ -39,6 +41,7 @@ export async function listAccessibleRepositories(
 ): Promise<AccessibleRepositories> {
   const repositories = new Map<string, AccessibleRepository>();
   let complete = false;
+  let retryAt: Date | null = null;
   let pagesRead = 0;
   try {
     const pages = client.pages(
@@ -68,8 +71,9 @@ export async function listAccessibleRepositories(
       throw error;
     }
     complete = false;
+    retryAt = error instanceof RateLimitError ? error.retryAt : null;
   }
-  return { repositories: [...repositories.values()], complete };
+  return { repositories: [...repositories.values()], complete, retryAt };
 }
 
 /**

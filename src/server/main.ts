@@ -188,6 +188,9 @@ async function main(): Promise<number> {
       const retryAt = poller.state.status.rateLimits.retryAt;
       return retryAt === null ? null : Date.parse(retryAt);
     },
+    onRateLimit: (retryAt) => {
+      poller.holdUntil(retryAt);
+    },
   });
   const server = new ViewerServer({
     source: store,

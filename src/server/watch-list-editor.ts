@@ -50,6 +50,11 @@ export interface ConfigWatchListEditorOptions {
    * nothing is sent to GitHub before that time.
    */
   readonly rateLimitedUntil?: () => number | null;
+  /**
+   * Called when GitHub answers a request of the editor with a rate limit, with the time it lifts
+   * (milliseconds since the epoch), so that whoever else sends requests can hold them too.
+   */
+  readonly onRateLimit?: (retryAt: number) => void;
   /** Milliseconds since the epoch; defaults to the system clock. */
   readonly now?: () => number;
 }
@@ -64,6 +69,8 @@ export class ConfigWatchListEditor implements WatchListEditor {
   #catalogue: { readonly value: RepositoryCatalogue; readonly at: number } | null = null;
   /** The request to GitHub under way, shared by everyone asking meanwhile. */
   #loading: Promise<RepositoryCatalogue> | null = null;
+  /** When the latest rate limit met by the editor's own requests lifts; 0 before any. */
+  #limitedUntil = 0;
 
   constructor(options: ConfigWatchListEditorOptions) {
     this.#options = options;
@@ -88,7 +95,12 @@ export class ConfigWatchListEditor implements WatchListEditor {
   async #loadCatalogue(): Promise<RepositoryCatalogue> {
     this.#refuseWhileRateLimited();
     try {
-      const value = await listAccessibleRepositories(this.#options.client);
+      const listed = await listAccessibleRepositories(this.#options.client);
+      // A rate limit that cut the list short is not a failure, but still holds what comes next.
+      if (listed.retryAt !== null) {
+        this.#noteRateLimit(listed.retryAt);
+      }
+      const value = { repositories: listed.repositories, complete: listed.complete };
       this.#catalogue = { value, at: this.#now() };
       return value;
     } catch (error) {
@@ -156,18 +168,27 @@ export class ConfigWatchListEditor implements WatchListEditor {
   }
 
   #refuseWhileRateLimited(): void {
-    const until = this.#options.rateLimitedUntil?.() ?? null;
-    if (until !== null && until > this.#now()) {
+    const until = Math.max(this.#limitedUntil, this.#options.rateLimitedUntil?.() ?? 0);
+    if (until > this.#now()) {
       throw new WatchListError(429, rateLimitMessage(until, this.#now()));
     }
   }
 
-  /** A GitHub failure as a refusal the page can show; anything else is returned as it is. */
+  #noteRateLimit(retryAt: Date): void {
+    this.#limitedUntil = Math.max(this.#limitedUntil, retryAt.getTime());
+    this.#options.onRateLimit?.(retryAt.getTime());
+  }
+
+  /**
+   * A GitHub failure as a refusal the page can show; anything else is returned as it is. A rate
+   * limit is remembered on the way.
+   */
   #explained(error: unknown, what: string, repository?: string): unknown {
     if (!(error instanceof GitHubError)) {
       return error;
     }
     if (error instanceof RateLimitError) {
+      this.#noteRateLimit(error.retryAt);
       return new WatchListError(429, rateLimitMessage(error.retryAt.getTime(), this.#now()));
     }
     if (error instanceof NotFoundError && repository !== undefined) {

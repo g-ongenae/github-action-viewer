@@ -40,6 +40,8 @@ function setup(config: Partial<Config> = {}): {
   file: FakeConfigFile;
   editor: ConfigWatchListEditor;
   clock: { now: number; rateLimitedUntil: number | null };
+  /** The rate limits the editor reported, as the times they lift. */
+  reported: number[];
 } {
   const github = new FakeGitHub();
   const file = new FakeConfigFile(config);
@@ -47,13 +49,15 @@ function setup(config: Partial<Config> = {}): {
     now: NOW,
     rateLimitedUntil: null,
   };
+  const reported: number[] = [];
   const editor = new ConfigWatchListEditor({
     client: new GitHubClient({ token: TOKEN, fetch: github.fetch, now: () => new Date(clock.now) }),
     configFile: file,
     rateLimitedUntil: () => clock.rateLimitedUntil,
+    onRateLimit: (retryAt) => reported.push(retryAt),
     now: () => clock.now,
   });
-  return { github, file, editor, clock };
+  return { github, file, editor, clock, reported };
 }
 
 /** The refusal `promise` rejects with: its status and its message. */
@@ -179,6 +183,27 @@ describe('ConfigWatchListEditor.add', () => {
     });
   });
 
+  it('remembers a rate limit its own request met, and reports it', async () => {
+    const { github, editor, clock, reported } = setup();
+    github.on('/repos/o/r', {
+      status: 429,
+      body: { message: 'Too many requests' },
+      headers: { 'retry-after': '170' },
+    });
+    await refusal(editor.add('o/r'));
+    expect(reported).toEqual([NOW + 170_000]);
+
+    // Nothing more is sent until it lifts, whatever is asked.
+    expect(await refusal(editor.add('o/other'))).toMatchObject({ status: 429 });
+    expect(await refusal(editor.catalogue())).toMatchObject({ status: 429 });
+    expect(github.requests).toHaveLength(1);
+
+    clock.now = NOW + 170_000;
+    github.on('/repos/o/r', { body: rawRepository('o/r') });
+    expect((await editor.add('o/r')).changed).toBe(true);
+    expect(reported).toHaveLength(1);
+  });
+
   it('sends nothing to GitHub while a rate limit is in effect', async () => {
     const { github, editor, clock } = setup();
     clock.rateLimitedUntil = NOW + 30_000;
@@ -267,6 +292,27 @@ describe('ConfigWatchListEditor.catalogue', () => {
     expect(await editor.catalogue()).toEqual(catalogue);
     expect(github.requests).toHaveLength(2);
     expect(github.requests[1]?.headers.get('if-none-match')).toBe('"v1"');
+  });
+
+  it('serves a list cut short by a rate limit, then waits for the limit to lift', async () => {
+    const { github, editor, reported } = setup();
+    github.on(LIST, {
+      body: [rawRepository('o/first')],
+      headers: { link: '<https://api.github.com/user/repos?page=2>; rel="next"' },
+    });
+    github.on('/user/repos?page=2', {
+      status: 429,
+      body: { message: 'Too many requests' },
+      headers: { 'retry-after': '60' },
+    });
+
+    expect(await editor.catalogue()).toEqual({
+      repositories: [{ fullName: 'o/first', private: false }],
+      complete: false,
+    });
+    expect(reported).toEqual([NOW + 60_000]);
+    expect(await refusal(editor.add('o/r'))).toMatchObject({ status: 429 });
+    expect(github.requests).toHaveLength(2);
   });
 
   it('asks GitHub once for callers arriving at the same time', async () => {

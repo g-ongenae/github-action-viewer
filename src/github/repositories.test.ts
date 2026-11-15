@@ -40,6 +40,7 @@ describe('listAccessibleRepositories', () => {
         { fullName: 'other-org/shared', private: false },
       ],
       complete: true,
+      retryAt: null,
     });
     expect(github.paths).toEqual([LIST]);
   });
@@ -73,6 +74,25 @@ describe('listAccessibleRepositories', () => {
     expect(await listAccessibleRepositories(client)).toEqual({
       repositories: [{ fullName: 'o/first', private: false }],
       complete: false,
+      retryAt: null,
+    });
+  });
+
+  it('says until when to wait when a rate limit is what cut the list short', async () => {
+    const github = new FakeGitHub();
+    const now = new Date('2026-11-13T12:00:00Z');
+    const client = new GitHubClient({ token: TOKEN, fetch: github.fetch, now: () => now });
+    github.on(LIST, { body: [rawRepository('o/first')], headers: nextPage(2) });
+    github.on('/user/repos?page=2', {
+      status: 429,
+      body: { message: 'Too many requests' },
+      headers: { 'retry-after': '120' },
+    });
+
+    expect(await listAccessibleRepositories(client)).toEqual({
+      repositories: [{ fullName: 'o/first', private: false }],
+      complete: false,
+      retryAt: new Date(now.getTime() + 120_000),
     });
   });
 
