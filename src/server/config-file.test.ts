@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -15,7 +16,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, type Config } from '../core/config.ts';
-import { ConfigFile, configPath, readConfigFile, type ConfigFileOptions } from './config-file.ts';
+import {
+  ConfigFile,
+  configPath,
+  readConfigFile,
+  UPDATE_ATTEMPTS,
+  type ConfigFileOptions,
+} from './config-file.ts';
 import type { Clock } from './poller.ts';
 
 let dir: string;
@@ -361,18 +368,100 @@ describe('ConfigFile.update', () => {
 
   it('writes through a symbolic link, keeping the link and the permissions of its target', async () => {
     const target = join(dir, 'dotfiles.json');
-    await writeFile(target, '{}', { mode: 0o600 });
+    await writeFile(target, '{}');
+    await chmod(target, 0o664);
     await symlink(target, path);
     const file = new ConfigFile(path, { log });
     await file.load();
+    // A mode given when a file is created loses these bits; the existing ones must stay.
+    const umask = process.umask(0o027);
 
-    await file.update(add('octo-org/widgets'));
+    try {
+      await file.update(add('octo-org/widgets'));
+    } finally {
+      process.umask(umask);
+    }
 
     expect((await lstat(path)).isSymbolicLink()).toBe(true);
     expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({
       maintainedRepositories: ['octo-org/widgets'],
     });
-    expect((await stat(target)).mode & 0o777).toBe(0o600);
+    expect((await stat(target)).mode & 0o777).toBe(0o664);
+  });
+
+  it('creates the file a symbolic link points to, keeping the link', async () => {
+    const target = join(dir, 'dotfiles', 'not-yet', 'viewer.json');
+    await symlink(join('dotfiles', 'not-yet', 'viewer.json'), path);
+    const file = new ConfigFile(path, { log });
+    await file.load();
+    expect(file.status.state).toBe('missing');
+
+    expect(await file.update(add('octo-org/widgets'))).toMatchObject({ kind: 'saved' });
+
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({
+      maintainedRepositories: ['octo-org/widgets'],
+    });
+    expect(await readdir(dir)).toEqual(['config.json', 'dotfiles']);
+  });
+
+  it('refuses a path whose symbolic links go round in circles', async () => {
+    await symlink(path, join(dir, 'other.json'));
+    await symlink(join(dir, 'other.json'), path);
+    const file = new ConfigFile(join(dir, 'other.json'), { log });
+    await file.load();
+
+    // Reading already fails on such a path: the file counts as having problems.
+    expect(await file.update(add('octo-org/widgets'))).toMatchObject({ kind: 'refused' });
+    expect((await readdir(dir)).sort()).toEqual(['config.json', 'other.json']);
+  });
+
+  it('starts over from a file saved by hand while the update was under way', async () => {
+    await save({ pollIntervalSeconds: 15 });
+    const file = new ConfigFile(path, { log });
+    await file.load();
+    let calls = 0;
+
+    const update = await file.update((current) => {
+      calls += 1;
+      if (calls === 1) {
+        // Saved by an editor after the server read the file, before it replaces it.
+        writeFileSync(path, JSON.stringify({ pollIntervalSeconds: 99 }));
+      }
+      return { maintainedRepositories: [...current.maintainedRepositories, 'octo-org/widgets'] };
+    });
+
+    expect(calls).toBe(2);
+    expect(update).toMatchObject({ kind: 'saved', config: { pollIntervalSeconds: 99 } });
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+      pollIntervalSeconds: 99,
+      maintainedRepositories: ['octo-org/widgets'],
+    });
+    expect(await readdir(dir)).toEqual(['config.json']);
+  });
+
+  it('gives up on a file that keeps changing, leaving the last hand save in place', async () => {
+    const file = new ConfigFile(path, { log });
+    await file.load();
+    let calls = 0;
+
+    const update = await file.update((current) => {
+      calls += 1;
+      writeFileSync(path, JSON.stringify({ pollIntervalSeconds: 20 + calls }));
+      return { maintainedRepositories: [...current.maintainedRepositories, 'octo-org/widgets'] };
+    });
+
+    expect(calls).toBe(UPDATE_ATTEMPTS);
+    expect(update).toEqual({
+      kind: 'refused',
+      reason: 'unwritable',
+      message: 'The configuration file kept changing while it was being saved: try again.',
+    });
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+      pollIntervalSeconds: 20 + UPDATE_ATTEMPTS,
+    });
+    expect(await readdir(dir)).toEqual(['config.json']);
+    expect(file.config.maintainedRepositories).toEqual([]);
   });
 
   it('runs concurrent updates one after the other, losing none', async () => {

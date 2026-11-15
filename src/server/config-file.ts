@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readlink, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CONFIG, formatConfigIssues, parseConfig, type Config } from '../core/config.ts';
@@ -8,6 +8,12 @@ import type { ConfigStatus } from './payload.ts';
 
 /** Environment variable overriding the path of the configuration file. */
 export const CONFIG_PATH_VARIABLE = 'GITHUB_ACTION_VIEWER_CONFIG';
+
+/** Times an update starts over because the file changed while it was being saved. */
+export const UPDATE_ATTEMPTS = 3;
+
+/** Symbolic links followed from the configuration path to the file it stands for. */
+const MAX_LINKS = 16;
 
 /** Time between two reads of the configuration file while watching it. */
 export const CONFIG_POLL_MS = 1000;
@@ -88,7 +94,7 @@ export type ConfigUpdate =
       /**
        * `read_only`: the file is never written (see {@link ConfigFileOptions.readOnly});
        * `invalid`: the file has problems, and is left for its owner to fix;
-       * `unwritable`: writing failed.
+       * `unwritable`: writing failed, or the file kept changing under the server.
        */
       readonly reason: 'read_only' | 'invalid' | 'unwritable';
       /** For a human; `invalid` lists the problems, one per line. */
@@ -187,6 +193,10 @@ export class ConfigFile {
    * computed from the file as it is now, not from the configuration in use, so that a change
    * saved a moment ago is never overwritten; only the keys it returns are set, the others (and
    * their order) are kept. The file is rewritten as indented JSON. Updates run one at a time.
+   *
+   * A file saved by someone else while the update is under way is noticed right before the
+   * replacement, and the update starts over from it (`edit` is then called again). What is left
+   * is the instant of the replacement itself: nothing coordinates the server with an editor.
    */
   update(edit: ConfigEdit): Promise<ConfigUpdate> {
     const update = this.#updating.then(() => this.#update(edit));
@@ -240,42 +250,56 @@ export class ConfigFile {
         message: 'The viewer runs in read-only mode: the configuration file is not changed.',
       };
     }
-    const read = await readConfigFile(this.path);
-    if (read.kind === 'invalid') {
-      return {
-        kind: 'refused',
-        reason: 'invalid',
-        message: `The configuration file has problems; fix them first:\n${read.problems}`,
+    for (let attempt = 1; attempt <= UPDATE_ATTEMPTS; attempt += 1) {
+      const read = await readConfigFile(this.path);
+      if (read.kind === 'invalid') {
+        return {
+          kind: 'refused',
+          reason: 'invalid',
+          message: `The configuration file has problems; fix them first:\n${read.problems}`,
+        };
+      }
+      const current = read.kind === 'ok' ? read.config : DEFAULT_CONFIG;
+      const changes = edit(current);
+      if (changes === null) {
+        return { kind: 'unchanged', config: current };
+      }
+      // What the file holds, not `current`: defaults are not written for the keys it leaves out.
+      const next = {
+        ...(read.kind === 'ok' ? (JSON.parse(read.text) as Record<string, unknown>) : {}),
+        ...changes,
       };
+      const parsed = parseConfig(next);
+      if (!parsed.ok) {
+        return { kind: 'refused', reason: 'invalid', message: formatConfigIssues(parsed.issues) };
+      }
+      const text = `${JSON.stringify(next, null, 2)}\n`;
+      let replaced: boolean;
+      try {
+        replaced = await replaceFile(
+          this.path,
+          text,
+          async () => describe(await readConfigFile(this.path)) === describe(read),
+        );
+      } catch (error) {
+        return {
+          kind: 'refused',
+          reason: 'unwritable',
+          message: `The configuration file could not be written (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`,
+        };
+      }
+      if (replaced) {
+        const saved: ConfigRead = { kind: 'ok', config: parsed.config, text };
+        this.#pending = null;
+        this.#apply(saved, describe(saved), 'Saved');
+        return { kind: 'saved', config: parsed.config };
+      }
     }
-    const current = read.kind === 'ok' ? read.config : DEFAULT_CONFIG;
-    const changes = edit(current);
-    if (changes === null) {
-      return { kind: 'unchanged', config: current };
-    }
-    // What the file holds, not `current`: defaults are not written for the keys it leaves out.
-    const next = {
-      ...(read.kind === 'ok' ? (JSON.parse(read.text) as Record<string, unknown>) : {}),
-      ...changes,
+    return {
+      kind: 'refused',
+      reason: 'unwritable',
+      message: 'The configuration file kept changing while it was being saved: try again.',
     };
-    const parsed = parseConfig(next);
-    if (!parsed.ok) {
-      return { kind: 'refused', reason: 'invalid', message: formatConfigIssues(parsed.issues) };
-    }
-    const text = `${JSON.stringify(next, null, 2)}\n`;
-    try {
-      await replaceFile(this.path, text);
-    } catch (error) {
-      return {
-        kind: 'refused',
-        reason: 'unwritable',
-        message: `The configuration file could not be written (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`,
-      };
-    }
-    const saved: ConfigRead = { kind: 'ok', config: parsed.config, text };
-    this.#pending = null;
-    this.#apply(saved, describe(saved), 'Saved');
-    return { kind: 'saved', config: parsed.config };
   }
 
   #apply(read: ConfigRead, found: string, verb?: string): void {
@@ -322,29 +346,65 @@ type FileStatus = Pick<ConfigStatus, 'state' | 'problems' | 'fallback'>;
 
 /**
  * Replaces the content of `path` in one step (a temporary file renamed over it), so that neither
- * a reader nor a crash ever finds half a file. A symbolic link is followed and kept: the file it
- * points to is the one replaced, with its permissions. Missing directories are created.
+ * a reader nor a crash ever finds half a file. Symbolic links are followed and kept, even to a
+ * file that does not exist yet: the file they lead to is the one written, keeping its
+ * permissions when it exists. Missing directories are created.
+ *
+ * `unchanged` is asked right before the replacement: when it answers false, nothing is replaced
+ * and the result is false.
  */
-async function replaceFile(path: string, text: string): Promise<void> {
-  let target = path;
+async function replaceFile(
+  path: string,
+  text: string,
+  unchanged: () => Promise<boolean>,
+): Promise<boolean> {
+  const target = await writeTarget(path);
   let mode: number | null = null;
   try {
-    target = await realpath(path);
     mode = (await stat(target)).mode & 0o777;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
     }
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(target), { recursive: true });
   }
   const temporary = `${target}.${String(process.pid)}.tmp`;
   try {
-    await writeFile(temporary, text, mode === null ? {} : { mode });
+    await writeFile(temporary, text);
+    if (mode !== null) {
+      // Set after creation: a mode given at creation is cut down by the process's umask.
+      await chmod(temporary, mode);
+    }
+    if (!(await unchanged())) {
+      await rm(temporary, { force: true });
+      return false;
+    }
     await rename(temporary, target);
+    return true;
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;
   }
+}
+
+/** The file that writing to `path` reaches: `path` itself, or where its symbolic links lead. */
+async function writeTarget(path: string): Promise<string> {
+  let target = path;
+  for (let followed = 0; followed < MAX_LINKS; followed += 1) {
+    let link: string;
+    try {
+      link = await readlink(target);
+    } catch (error) {
+      const { code } = error as NodeJS.ErrnoException;
+      // Not a link, or nothing there yet: this is the file to write.
+      if (code === 'EINVAL' || code === 'ENOENT') {
+        return target;
+      }
+      throw error;
+    }
+    target = resolve(dirname(target), link);
+  }
+  throw Object.assign(new Error('Too many levels of symbolic links.'), { code: 'ELOOP' });
 }
 
 /** What a read found, as a string that differs whenever the outcome would. */
