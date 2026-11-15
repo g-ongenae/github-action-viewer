@@ -61,6 +61,8 @@ export class RepositoryDialog {
   #load = 0;
   /** A change is on its way to the server: no other one starts meanwhile. */
   #busy = false;
+  /** Counts the times the dialog was opened, to tell an answer that belongs to an earlier one. */
+  #opening = 0;
 
   /** `opener` is the page's button that shows the dialog; the dialog itself is added to the body. */
   constructor(document: Document, opener: HTMLButtonElement, api: WatchListApi) {
@@ -195,6 +197,7 @@ export class RepositoryDialog {
     if (this.#dialog.open || !this.#canOpen()) {
       return;
     }
+    this.#opening += 1;
     this.#input.value = '';
     this.#say(null);
     this.#render();
@@ -257,6 +260,8 @@ export class RepositoryDialog {
     if (this.#busy || !this.#editable()) {
       return;
     }
+    const typed = this.#input.value;
+    const opening = this.#opening;
     this.#setBusy(true);
     this.#say({ tone: 'info', text: `Adding ${repository}…` });
     const result = await this.#api.add(repository);
@@ -267,7 +272,10 @@ export class RepositoryDialog {
     }
     const { changed, repository: name, maintainedRepositories } = result.value;
     this.#adopt(maintainedRepositories);
-    this.#input.value = '';
+    // The field stays usable meanwhile: what was typed since, or after reopening, is kept.
+    if (this.#input.value === typed && this.#opening === opening) {
+      this.#input.value = '';
+    }
     this.#say({
       tone: 'success',
       text: changed

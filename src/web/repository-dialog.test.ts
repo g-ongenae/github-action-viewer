@@ -313,6 +313,32 @@ describe('RepositoryDialog: adding', () => {
     expect(document.activeElement).toBe(input());
   });
 
+  it('keeps what was typed while the server was answering', async () => {
+    await openLoaded();
+    type('owner/first');
+    submit();
+    type('owner/second');
+
+    await api.answer(change('owner/first', ['owner/first']));
+
+    expect(input().value).toBe('owner/second');
+    expect(maintained()).toEqual(['owner/first']);
+    expect(message().textContent).toMatch(/^Added owner\/first\./);
+  });
+
+  it('keeps what was typed after reopening the dialog while the server was answering', async () => {
+    await openLoaded();
+    type('owner/first');
+    submit();
+    button('.dialog-close').click();
+    opener().click();
+    type('owner/first');
+
+    await api.answer(change('owner/first', ['owner/first']));
+
+    expect(input().value).toBe('owner/first');
+  });
+
   it('adds the typed name on Enter, even one the list does not have', async () => {
     await openLoaded();
     type('  Someone/Public-Thing ');
