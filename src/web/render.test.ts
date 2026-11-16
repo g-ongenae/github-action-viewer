@@ -6,6 +6,7 @@ import type { PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
 import { PageRenderer } from './render.ts';
 import {
+  configStatus,
   iso,
   lineIn,
   lineView,
@@ -340,7 +341,11 @@ describe('PageRenderer: notices and empty states', () => {
       payload([], {
         lastSuccessAt: iso(12),
         stale: { reason: 'collection_failed', message: 'Network down.', since: iso(10) },
-        config: { state: 'invalid', problems: 'port: <b>bad</b>', fallback: 'last_valid' },
+        config: configStatus({
+          state: 'invalid',
+          problems: 'port: <b>bad</b>',
+          fallback: 'last_valid',
+        }),
       }),
     );
     expect($('#notices').hidden).toBe(false);

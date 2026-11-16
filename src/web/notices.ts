@@ -164,25 +164,33 @@ export function emptyState(
   if (payload.snapshot.repositories.length > 0) {
     return null;
   }
+  const { config } = payload.status;
   return {
     key: 'no-repositories',
     title: 'No workflow runs to show.',
     paragraphs: [
       [
-        'The page watches the repositories you own, the ones listed under ',
+        'The page watches the repositories you own, the ones you added (',
         { code: 'maintainedRepositories' },
         ' in ',
         { code: 'config.json' },
-        ', and every repository where you have an open pull request. Their default branch and your pull requests appear as soon as they have a workflow run; other branches while they run.',
+        '), and every repository where you have an open pull request. Their default branch and your pull requests appear as soon as they have a workflow run; other branches while they run.',
       ],
-      payload.status.config.state === 'missing'
+      ...(config.editing === 'on'
+        ? [
+            [
+              'To watch another repository, of any organisation or account, use “Add repository” above.',
+            ],
+          ]
+        : []),
+      config.state === 'missing'
         ? [
             'There is no ',
             { code: 'config.json' },
             ' yet, so the defaults apply. The README explains how to create one; changes apply as soon as the file is saved.',
           ]
         : [
-            'To watch more, edit ',
+            'To change what is watched, edit ',
             { code: 'config.json' },
             ' (see the README); changes apply as soon as the file is saved.',
           ],

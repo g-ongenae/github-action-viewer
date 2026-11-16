@@ -4,7 +4,20 @@ import type { PollState } from './poller.ts';
 import { PayloadStore } from './store.ts';
 import { NOW, repo, snapshotOf } from './test-fixtures.ts';
 
-const OK: ConfigStatus = { state: 'ok', problems: null, fallback: null };
+const OK: ConfigStatus = {
+  state: 'ok',
+  problems: null,
+  fallback: null,
+  maintainedRepositories: [],
+  editing: 'on',
+};
+const INVALID: ConfigStatus = {
+  ...OK,
+  state: 'invalid',
+  problems: 'port: wrong',
+  fallback: 'last_valid',
+  editing: 'blocked',
+};
 
 function pollState(
   at: number,
@@ -65,12 +78,8 @@ describe('PayloadStore', () => {
         ),
       ),
     ).toBe(true);
-    expect(
-      store.setConfigStatus({ state: 'invalid', problems: 'port: wrong', fallback: 'last_valid' }),
-    ).toBe(true);
-    expect(
-      store.setConfigStatus({ state: 'invalid', problems: 'port: wrong', fallback: 'last_valid' }),
-    ).toBe(false);
+    expect(store.setConfigStatus(INVALID)).toBe(true);
+    expect(store.setConfigStatus(INVALID)).toBe(false);
     expect(seen).toEqual([false, true, true, true, false]);
   });
 

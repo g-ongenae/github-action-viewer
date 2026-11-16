@@ -268,6 +268,68 @@ describe('Poller', () => {
     await p.stop();
   });
 
+  it('holds the next collection for a rate limit met outside a collection', async () => {
+    const p = poller();
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await script.succeed(quiet());
+    const retryAt = Date.now() + 10 * 60_000;
+
+    p.holdUntil(retryAt);
+
+    const { status } = lastState();
+    expect(status.rateLimits.retryAt).toBe(new Date(retryAt).toISOString());
+    expect(status.nextPollAt).toBe(new Date(retryAt).toISOString());
+    expect(status.pollInterval).toEqual({
+      baseSeconds: 15,
+      currentSeconds: 600,
+      reason: 'rate_limited',
+    });
+    // Neither the interval nor an urgent request starts a collection before the limit lifts.
+    p.pollNow();
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+    expect(script.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.calls).toHaveLength(2);
+
+    await script.succeed(quiet());
+    expect(lastState().status.rateLimits.retryAt).toBeNull();
+    expect(lastState().status.pollInterval.reason).toBe('base');
+  });
+
+  it('ignores a hold that is over, or shorter than the one in effect', async () => {
+    const p = poller();
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await script.succeed(quiet());
+    const retryAt = Date.now() + 60_000;
+    p.holdUntil(retryAt);
+    const published = updates.length;
+
+    p.holdUntil(Date.now() - 1);
+    p.holdUntil(retryAt - 30_000);
+
+    expect(updates).toHaveLength(published);
+    expect(lastState().status.rateLimits.retryAt).toBe(new Date(retryAt).toISOString());
+  });
+
+  it('leaves a running collection alone when a hold arrives, and starts held', async () => {
+    const p = poller();
+    p.holdUntil(Date.now() + 60_000);
+    p.start();
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(script.calls).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.calls).toHaveLength(1);
+
+    // GitHub answering the running collection is the fresher news: the hold goes with it.
+    p.holdUntil(Date.now() + 60_000);
+    expect(script.calls[0]?.signal.aborted).toBe(false);
+    await script.succeed(quiet());
+    expect(lastState().status.rateLimits.retryAt).toBeNull();
+    expect(lastState().status.nextPollAt).toBe(new Date(Date.now() + BASE).toISOString());
+  });
+
   it('waits past the 2^31 ms timer limit instead of firing at once', async () => {
     const delays: number[] = [];
     const p = new Poller({

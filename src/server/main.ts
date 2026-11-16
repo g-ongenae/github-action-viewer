@@ -15,6 +15,7 @@ import { HOST, isValidHost, ViewerServer } from './http.ts';
 import { createLog } from './log.ts';
 import { Poller } from './poller.ts';
 import { PayloadStore } from './store.ts';
+import { ConfigWatchListEditor } from './watch-list-editor.ts';
 
 const STATIC_ROOT = fileURLToPath(new URL('../../dist/web/', import.meta.url));
 
@@ -22,7 +23,7 @@ const STATIC_ROOT = fileURLToPath(new URL('../../dist/web/', import.meta.url));
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
 const USAGE = `Usage: pnpm start [--port <port>] [--config <path>] [--allowed-host <host>]...
-                 [--demo [--demo-variant <name>]]
+                 [--read-only] [--demo [--demo-variant <name>]]
 
 Serves a page showing the GitHub Actions runs you care about, on http://${HOST}:<port>/.
 
@@ -33,6 +34,8 @@ Options:
   --allowed-host <host>
                        Also answer to this Host, as the browser sends it (name, or
                        name:port), e.g. behind \`tailscale serve\`. Repeatable.
+  --read-only          Do not let the page add or remove repositories: the configuration
+                       file is never written.
   --demo               Serve made-up data instead of collecting from GitHub (no token, no
                        configuration): every state the page can show.
   --demo-variant <name>
@@ -47,6 +50,8 @@ interface Options {
   readonly config: string | undefined;
   /** Extra `Host` values to answer to, from `--allowed-host`. */
   readonly allowedHosts: readonly string[];
+  /** Whether the page may not edit the watch list, from `--read-only`. */
+  readonly readOnly: boolean;
   /** The demo variant to serve; undefined outside demo mode. */
   readonly demo: string | undefined;
 }
@@ -59,6 +64,7 @@ function parseOptions(args: readonly string[]): Options | null {
       port: { type: 'string', short: 'p' },
       config: { type: 'string', short: 'c' },
       'allowed-host': { type: 'string', multiple: true },
+      'read-only': { type: 'boolean' },
       demo: { type: 'boolean' },
       'demo-variant': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -87,7 +93,13 @@ function parseOptions(args: readonly string[]): Options | null {
     }
   }
   const demo = values.demo === true ? (values['demo-variant'] ?? 'full') : undefined;
-  return { port, config: values.config, allowedHosts, demo };
+  return {
+    port,
+    config: values.config,
+    allowedHosts,
+    readOnly: values['read-only'] === true,
+    demo,
+  };
 }
 
 async function main(): Promise<number> {
@@ -110,6 +122,7 @@ async function main(): Promise<number> {
       variant: options.demo,
       port: options.port,
       allowedHosts: options.allowedHosts,
+      readOnly: options.readOnly,
       staticRoot: STATIC_ROOT,
       log,
     });
@@ -120,6 +133,7 @@ async function main(): Promise<number> {
 
   const configFile: ConfigFile = new ConfigFile(configPath(options.config), {
     log,
+    readOnly: options.readOnly,
     onChange: ({ configChanged }) => {
       store.setConfigStatus(configFile.status);
       if (configChanged) {
@@ -167,11 +181,23 @@ async function main(): Promise<number> {
     },
   });
   const store = new PayloadStore(poller.state, configFile.status);
+  const watchList = new ConfigWatchListEditor({
+    client,
+    configFile,
+    rateLimitedUntil: () => {
+      const retryAt = poller.state.status.rateLimits.retryAt;
+      return retryAt === null ? null : Date.parse(retryAt);
+    },
+    onRateLimit: (retryAt) => {
+      poller.holdUntil(retryAt);
+    },
+  });
   const server = new ViewerServer({
     source: store,
     staticRoot: STATIC_ROOT,
     log,
     allowedHosts: options.allowedHosts,
+    ...(options.readOnly ? {} : { watchList }),
   });
 
   const port = options.port ?? configFile.config.port;

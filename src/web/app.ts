@@ -4,17 +4,29 @@
 import type { Heartbeat, PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
 import { PageRenderer } from './render.ts';
+import { RepositoryDialog } from './repository-dialog.ts';
 import { describeChanges } from './summary.ts';
+import { createWatchListApi, type WatchListApi } from './watch-list-api.ts';
 
 export class App {
   readonly #renderer: PageRenderer;
+  readonly #dialog: RepositoryDialog;
   readonly #now: () => number;
   #payload: PagePayload | null = null;
   #connection: ConnectionState = 'connecting';
   #wasLive = false;
 
-  constructor(document: Document, now: () => number = Date.now) {
+  constructor(
+    document: Document,
+    now: () => number = Date.now,
+    api: WatchListApi = createWatchListApi(),
+  ) {
     this.#renderer = new PageRenderer(document);
+    const opener = document.getElementById('add-repository');
+    if (!(opener instanceof HTMLButtonElement)) {
+      throw new Error('The page has no #add-repository button.');
+    }
+    this.#dialog = new RepositoryDialog(document, opener, api);
     this.#now = now;
     this.render();
   }
@@ -24,6 +36,10 @@ export class App {
     const previous = this.#payload?.snapshot ?? null;
     this.#payload = payload;
     this.render();
+    this.#dialog.update({
+      config: payload.status.config,
+      repositories: payload.snapshot?.repositories ?? [],
+    });
     this.#renderer.announce(describeChanges(previous, payload.snapshot));
   }
 

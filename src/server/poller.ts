@@ -121,7 +121,7 @@ export class Poller {
       return;
     }
     this.#started = true;
-    this.#schedule(0);
+    this.#schedule(this.#rateLimitWait());
   }
 
   /**
@@ -137,6 +137,26 @@ export class Poller {
       return;
     }
     this.#schedule(this.#rateLimitWait());
+    this.#emit(null);
+  }
+
+  /**
+   * Records a rate limit met outside a collection (by the page's edits of the watch list): no
+   * collection starts before `retryAt`, in milliseconds since the epoch. A collection already
+   * running is left alone: it meets the limit by itself, or shows that GitHub answers again.
+   */
+  holdUntil(retryAt: number): void {
+    const now = this.#clock.now();
+    if (this.#stopped || retryAt <= now || (this.#retryAt !== null && this.#retryAt >= retryAt)) {
+      return;
+    }
+    this.#retryAt = retryAt;
+    this.#rateLimits = { ...this.#rateLimits, retryAt: new Date(retryAt).toISOString() };
+    const dueAt = this.#nextPollAt === null ? null : Date.parse(this.#nextPollAt);
+    if (this.#started && this.#running === null && dueAt !== null && dueAt < retryAt) {
+      this.#setInterval(this.#options.config(), retryAt - now, 'rate_limited');
+      this.#schedule(retryAt - now);
+    }
     this.#emit(null);
   }
 

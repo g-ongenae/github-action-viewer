@@ -1,4 +1,5 @@
-// The HTTP API contract: what `GET /api/snapshot` and `GET /api/events` send to the page.
+// The HTTP API contract: what `GET /api/snapshot` and `GET /api/events` send to the page, and the
+// answers of the routes that edit the list of maintained repositories.
 //
 // This module holds types only and imports nothing but types, so that the browser code can use
 // it with `import type` without pulling any Node module into the bundle. Like the core snapshot,
@@ -99,6 +100,51 @@ export interface ConfigStatus {
   readonly problems: string | null;
   /** For `invalid`: the configuration still in use. Null otherwise. */
   readonly fallback: 'last_valid' | 'defaults' | null;
+  /** `maintainedRepositories` of the configuration in use (`owner/name`), in the file's order. */
+  readonly maintainedRepositories: readonly string[];
+  /**
+   * Whether the page may add and remove maintained repositories:
+   * - `on`: yes;
+   * - `blocked`: not while the file has problems (the server will not rewrite such a file);
+   * - `off`: never (the server runs with `--read-only`).
+   */
+  readonly editing: 'on' | 'blocked' | 'off';
+}
+
+/**
+ * `GET /api/repositories`: the repositories the page offers to add. It is not exhaustive (any
+ * repository the token can read can be added by name), only what GitHub lists for the user.
+ */
+export interface RepositoryCatalogue {
+  /**
+   * Repositories the user owns, collaborates on or reaches through an organization, public and
+   * private, that are neither archived nor disabled; most recently pushed first.
+   */
+  readonly repositories: readonly CatalogueRepository[];
+  /** False when the list was cut short (GitHub failed part-way, or it has too many pages). */
+  readonly complete: boolean;
+}
+
+export interface CatalogueRepository {
+  /** `owner/name`, with GitHub's casing. */
+  readonly fullName: string;
+  readonly private: boolean;
+}
+
+/** Answer of `PUT` and `DELETE /api/maintained-repositories/{owner}/{name}`. */
+export interface WatchListChange {
+  /** The repository, under GitHub's current name when it was looked up (`PUT`). */
+  readonly repository: string;
+  /** False when there was nothing to do: already in the list (`PUT`) or not in it (`DELETE`). */
+  readonly changed: boolean;
+  /** `maintainedRepositories` after the change. */
+  readonly maintainedRepositories: readonly string[];
+}
+
+/** Body of an error answer of the three routes above; other routes answer in plain text. */
+export interface ApiError {
+  /** What went wrong, for the reader. */
+  readonly error: string;
 }
 
 /**

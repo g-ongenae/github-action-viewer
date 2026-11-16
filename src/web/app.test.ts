@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from './app.ts';
 import {
+  configStatus,
   heartbeat,
   iso,
   lineIn,
@@ -18,7 +19,11 @@ let app: App;
 beforeEach(() => {
   now = NOW;
   document.body.innerHTML = PAGE_SKELETON;
-  app = new App(document, () => now);
+  app = new App(document, () => now, {
+    catalogue: () => Promise.resolve({ ok: true, value: { repositories: [], complete: true } }),
+    add: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
+    remove: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
+  });
 });
 
 const text = (selector: string): string | null =>
@@ -73,5 +78,24 @@ describe('App', () => {
     expect(text('.connection-label')).toBe('Disconnected');
     app.setConnection('live');
     expect(text('#announcer')).toBe('Reconnected.');
+  });
+
+  it('offers to add repositories once the server allows it, with the list it publishes', () => {
+    const opener = document.querySelector<HTMLButtonElement>('#add-repository');
+    expect(opener?.hidden).toBe(true);
+
+    app.setPayload(payload([], { config: configStatus({ maintainedRepositories: ['o/added'] }) }));
+    expect(opener?.hidden).toBe(false);
+    opener?.click();
+    expect(document.querySelector('dialog')?.open).toBe(true);
+    expect(text('.maintained-name')).toBe('o/added');
+
+    app.setPayload(payload([], { config: configStatus({ editing: 'off' }) }));
+    expect(opener?.hidden).toBe(true);
+  });
+
+  it('needs the button of the page skeleton', () => {
+    document.body.innerHTML = PAGE_SKELETON.replace('id="add-repository"', '');
+    expect(() => new App(document)).toThrow('The page has no #add-repository button.');
   });
 });

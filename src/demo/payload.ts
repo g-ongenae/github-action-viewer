@@ -6,7 +6,7 @@
 import { buildSnapshot } from '../core/build-snapshot.ts';
 import type { PullRequestInput, RepositoryInput, WorkflowRunInput } from '../core/inputs.ts';
 import type { RunState } from '../core/run-state.ts';
-import type { PagePayload, ServerStatus } from '../server/payload.ts';
+import type { ConfigStatus, PagePayload, ServerStatus } from '../server/payload.ts';
 
 /**
  * - `full`: every run state and every notice at once (configuration problem, slowed-down polling,
@@ -19,6 +19,22 @@ export const DEMO_VARIANTS = ['full', 'failing', 'empty', 'first-load'] as const
 export type DemoVariant = (typeof DEMO_VARIANTS)[number];
 
 export const DEMO_VIEWER = 'demo-user';
+
+/** The watch list of the demo, which its made-up editor changes (see `watch-list.ts`). */
+export interface DemoWatchListState {
+  /** The maintained repositories (`owner/name`). */
+  readonly maintained: readonly string[];
+  readonly editing: ConfigStatus['editing'];
+}
+
+/** The maintained repositories a variant starts with: those of its repositories listed as such. */
+export function demoMaintained(variant: DemoVariant): string[] {
+  return variant === 'full' || variant === 'failing'
+    ? demoRepositories(0, 0)
+        .filter((repository) => repository.reasons.includes('maintained'))
+        .map((repository) => repository.fullName)
+    : [];
+}
 
 const MINUTE = 60_000;
 
@@ -431,6 +447,48 @@ function demoRepositories(start: number, step: number): RepositoryInput[] {
   ];
 }
 
+/**
+ * `repositories` as the watch list has them: a repository removed from the maintained ones loses
+ * that reason, and goes if it had no other; one added to them appears with a finished run.
+ */
+function withWatchList(
+  repositories: readonly RepositoryInput[],
+  maintained: readonly string[],
+  start: number,
+): RepositoryInput[] {
+  const listed = new Set(maintained.map((name) => name.toLowerCase()));
+  const kept = repositories.flatMap((repository) => {
+    const reasons = repository.reasons.filter(
+      (reason) => reason !== 'maintained' || listed.has(repository.fullName.toLowerCase()),
+    );
+    return reasons.length === 0 ? [] : [{ ...repository, reasons }];
+  });
+  const known = new Set(repositories.map((repository) => repository.fullName.toLowerCase()));
+  const added = maintained
+    .filter((name) => !known.has(name.toLowerCase()))
+    .map((name) =>
+      demoRepository(
+        name,
+        ['maintained'],
+        [
+          {
+            id: 20_000 + hash(name),
+            workflow: 'CI',
+            state: 'success',
+            minutesAgo: 2,
+            branch: 'main',
+            sha: 'd4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b6c8d0e2',
+            title: 'Run the tests on every push',
+            author: 'Ada Lovelace',
+          },
+        ],
+        [],
+        start,
+      ),
+    );
+  return [...kept, ...added];
+}
+
 /** A small stable number from a string (workflow ids for the demo). */
 function hash(text: string): number {
   let value = 7;
@@ -442,15 +500,24 @@ function hash(text: string): number {
 
 /**
  * The demo payload for `variant`. `start` is when the demo started (run dates are relative to
- * it, so they age naturally), `now` the current time, `step` how far the little story went.
+ * it, so they age naturally), `now` the current time, `step` how far the little story went, and
+ * `watchList` what the reader made of the maintained repositories.
  */
 export function demoPayload(
   variant: DemoVariant,
   start: number,
   now: number,
   step: number,
+  watchList: DemoWatchListState = { maintained: demoMaintained(variant), editing: 'on' },
 ): PagePayload {
   const iso = (time: number): string => new Date(time).toISOString();
+  const config: ConfigStatus = {
+    state: 'ok',
+    problems: null,
+    fallback: null,
+    maintainedRepositories: watchList.maintained,
+    editing: watchList.editing,
+  };
   const status: ServerStatus = {
     lastCheckedAt: iso(now - 4_000),
     lastSuccessAt: iso(now - 4_000),
@@ -463,7 +530,7 @@ export function demoPayload(
       search: { limit: 30, remaining: 29, resetAt: iso(now + MINUTE) },
       retryAt: null,
     },
-    config: { state: 'ok', problems: null, fallback: null },
+    config,
   };
 
   switch (variant) {
@@ -480,10 +547,15 @@ export function demoPayload(
     case 'empty':
       return {
         snapshot: buildSnapshot(
-          { viewer: DEMO_VIEWER, repositories: [], problems: [], rateLimit: null },
+          {
+            viewer: DEMO_VIEWER,
+            repositories: withWatchList([], watchList.maintained, start),
+            problems: [],
+            rateLimit: null,
+          },
           { now: new Date(now), recentWindowHours: 24 },
         ),
-        status: { ...status, config: { state: 'missing', problems: null, fallback: null } },
+        status: { ...status, config: { ...config, state: 'missing' } },
       };
     case 'full':
     case 'failing':
@@ -493,7 +565,7 @@ export function demoPayload(
   const snapshot = buildSnapshot(
     {
       viewer: DEMO_VIEWER,
-      repositories: demoRepositories(start, step),
+      repositories: withWatchList(demoRepositories(start, step), watchList.maintained, start),
       problems: [
         {
           kind: 'repository',
@@ -536,11 +608,13 @@ export function demoPayload(
     snapshot,
     status: {
       ...status,
-      staleRepositories: [
-        { fullName: 'acme-labs/data-pipeline', lastRefreshedAt: iso(start - 12 * MINUTE) },
-      ],
+      staleRepositories: snapshot.repositories
+        .filter((repository) => repository.fullName === 'acme-labs/data-pipeline')
+        .map(({ fullName }) => ({ fullName, lastRefreshedAt: iso(start - 12 * MINUTE) })),
       pollInterval: { baseSeconds: 15, currentSeconds: 41, reason: 'budget' },
+      // Editing stays on, unlike with a real file that has problems: it is the demo's point.
       config: {
+        ...config,
         state: 'invalid',
         problems:
           'maintainedRepositories[2]: expected "owner/name", got "acme-labs"\npollIntervalSeconds: expected an integer of at least 10, got 5',
