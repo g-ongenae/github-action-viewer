@@ -3,6 +3,7 @@
 
 import type { RunState } from '../core/run-state.ts';
 import type { LineView, RepositoryView } from '../core/snapshot.ts';
+import { plural } from './format.ts';
 import type { Tone } from './states.ts';
 
 /**
@@ -108,6 +109,26 @@ export function filterRepositories(
     const lines = repository.lines.filter((line) => matchesFilter(line, selected));
     return lines.length > 0 ? [{ ...repository, lines }] : [];
   });
+}
+
+/** What a change of the filter leaves on the page, said to assistive technology. */
+export function describeFilter(
+  repositories: readonly RepositoryView[],
+  selected: ReadonlySet<LineStatus>,
+): string {
+  const total = lineCount(repositories);
+  if (selected.size === 0) {
+    return `Showing all ${plural(total, 'line')}.`;
+  }
+  const shown = lineCount(filterRepositories(repositories, selected));
+  return shown === 0
+    ? `No line matches the filter; ${plural(total, 'line')} hidden.`
+    : `Showing ${String(shown)} of ${plural(total, 'line')}.`;
+}
+
+/** Number of lines of all `repositories`. */
+export function lineCount(repositories: readonly RepositoryView[]): number {
+  return repositories.reduce((sum, repository) => sum + repository.lines.length, 0);
 }
 
 /** Number of lines of each status; a line counts once under each of its statuses. */

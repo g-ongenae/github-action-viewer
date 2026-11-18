@@ -4,7 +4,7 @@
 import type { Heartbeat, PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
 import { FilterBar } from './filter-bar.ts';
-import { countStatuses } from './filter.ts';
+import { countStatuses, describeFilter } from './filter.ts';
 import { PageRenderer } from './render.ts';
 import { RepositoryDialog } from './repository-dialog.ts';
 import { describeChanges } from './summary.ts';
@@ -32,6 +32,9 @@ export class App {
     this.#dialog = new RepositoryDialog(document, opener, api);
     this.#filterBar = new FilterBar(document, () => {
       this.render();
+      this.#renderer.announce(
+        describeFilter(this.#payload?.snapshot?.repositories ?? [], this.#filterBar.selected),
+      );
     });
     this.#now = now;
     this.render();

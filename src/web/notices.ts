@@ -5,7 +5,7 @@
 import type { Problem, RepositoryView } from '../core/snapshot.ts';
 import type { PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
-import { LINE_STATUSES, STATUS_PRESENTATION, type LineStatus } from './filter.ts';
+import { LINE_STATUSES, lineCount, STATUS_PRESENTATION, type LineStatus } from './filter.ts';
 import { formatAgo, formatClock, formatDuration, formatIn, plural } from './format.ts';
 
 /** `warning`: something the reader may want to act on; `info`: worth knowing, nothing to do. */
@@ -204,7 +204,7 @@ export function filteredOutState(
   repositories: readonly RepositoryView[],
   selected: ReadonlySet<LineStatus>,
 ): EmptyState {
-  const hidden = repositories.reduce((sum, repository) => sum + repository.lines.length, 0);
+  const hidden = lineCount(repositories);
   const shown = LINE_STATUSES.filter((status) => selected.has(status))
     .map((status) => STATUS_PRESENTATION[status].label)
     .join(', ');

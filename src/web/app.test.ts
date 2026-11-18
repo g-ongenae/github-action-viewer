@@ -171,6 +171,16 @@ describe('App', () => {
       expect(document.activeElement).toBe(chip('Running'));
     });
 
+    it('says what a change of the filter leaves on the page', () => {
+      app.setPayload(busy);
+      chip('Failed').click();
+      expect(text('#announcer')).toBe('Showing 1 of 3 lines.');
+      chip('Failed').click();
+      expect(text('#announcer')).toBe('Showing all 3 lines.');
+      chip('Waiting').click();
+      expect(text('#announcer')).toBe('No line matches the filter; 3 lines hidden.');
+    });
+
     it('starts from the statuses in the address', () => {
       history.replaceState(null, '', '/?status=passed');
       document.body.innerHTML = PAGE_SKELETON;

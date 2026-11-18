@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   countStatuses,
+  describeFilter,
   filterRepositories,
   lineStatuses,
   matchesFilter,
@@ -89,6 +90,18 @@ describe('countStatuses', () => {
         repositoryView('o/b', [lineIn('cancelled')]),
       ]),
     ).toEqual({ running: 1, failed: 1, waiting: 0, passed: 1, other: 1 });
+  });
+});
+
+describe('describeFilter', () => {
+  const repositories = [repositoryView('o/a', [lineIn('success'), lineIn('failure')])];
+
+  it('says how many lines show', () => {
+    expect(describeFilter(repositories, new Set())).toBe('Showing all 2 lines.');
+    expect(describeFilter(repositories, new Set(['failed']))).toBe('Showing 1 of 2 lines.');
+    expect(describeFilter(repositories, new Set(['waiting']))).toBe(
+      'No line matches the filter; 2 lines hidden.',
+    );
   });
 });
 
