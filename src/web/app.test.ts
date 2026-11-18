@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './app.ts';
 import {
   configStatus,
@@ -10,7 +10,9 @@ import {
   NOW,
   PAGE_SKELETON,
   payload,
+  prLine,
   repositoryView,
+  runView,
 } from './test-fixtures.ts';
 
 let now = NOW;
@@ -92,6 +94,121 @@ describe('App', () => {
 
     app.setPayload(payload([], { config: configStatus({ editing: 'off' }) }));
     expect(opener?.hidden).toBe(true);
+  });
+
+  describe('status filter', () => {
+    const chip = (label: string): HTMLButtonElement => {
+      const found = [...document.querySelectorAll<HTMLButtonElement>('.filter')].find(
+        (button) => button.querySelector('.filter-label')?.textContent === label,
+      );
+      if (found === undefined) {
+        throw new Error(`No ${label} chip`);
+      }
+      return found;
+    };
+    const refs = (): string[] =>
+      [...document.querySelectorAll('.line-ref')].map((ref) => ref.textContent);
+    const showAll = (): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>('.filter-clear');
+    const busy = payload([
+      repositoryView('o/r', [
+        lineIn('in_progress'),
+        prLine(1, { runs: [runView({ state: 'failure' })] }),
+        prLine(2, { runs: [runView({ state: 'success' })] }),
+      ]),
+    ]);
+
+    afterEach(() => {
+      history.replaceState(null, '', '/');
+    });
+
+    it('stays hidden until there are lines to filter', () => {
+      expect(document.querySelector<HTMLElement>('#filters')?.hidden).toBe(true);
+      app.setPayload(payload([]));
+      expect(document.querySelector<HTMLElement>('#filters')?.hidden).toBe(true);
+      app.setPayload(busy);
+      expect(document.querySelector<HTMLElement>('#filters')?.hidden).toBe(false);
+    });
+
+    it('counts the lines of each status', () => {
+      app.setPayload(busy);
+      expect(
+        [...document.querySelectorAll('.filter')].map((button) => [
+          button.querySelector('.filter-label')?.textContent,
+          button.querySelector('.filter-count')?.textContent,
+          button.classList.contains('filter-is-empty'),
+        ]),
+      ).toEqual([
+        ['Running', '1', false],
+        ['Failed', '1', false],
+        ['Waiting', '0', true],
+        ['Passed', '1', false],
+        ['Other', '0', true],
+      ]);
+    });
+
+    it('toggles statuses, keeps them in the address, and shows all again', () => {
+      app.setPayload(busy);
+      expect(showAll()?.hidden).toBe(true);
+
+      chip('Failed').click();
+      expect(chip('Failed').getAttribute('aria-pressed')).toBe('true');
+      expect(refs()).toEqual(['#1']);
+      expect(location.search).toBe('?status=failed');
+      expect(showAll()?.hidden).toBe(false);
+
+      chip('Running').click();
+      expect(refs()).toEqual(['main', '#1']);
+      expect(location.search).toBe('?status=running,failed');
+
+      chip('Failed').click();
+      expect(refs()).toEqual(['main']);
+
+      showAll()?.click();
+      expect(refs()).toEqual(['main', '#1', '#2']);
+      expect(location.search).toBe('');
+      expect(chip('Running').getAttribute('aria-pressed')).toBe('false');
+      expect(document.activeElement).toBe(chip('Running'));
+    });
+
+    it('says what a change of the filter leaves on the page', () => {
+      app.setPayload(busy);
+      chip('Failed').click();
+      expect(text('#announcer')).toBe('Showing 1 of 3 lines.');
+      chip('Failed').click();
+      expect(text('#announcer')).toBe('Showing all 3 lines.');
+      chip('Waiting').click();
+      expect(text('#announcer')).toBe('No line matches the filter; 3 lines hidden.');
+    });
+
+    it('keeps the focus near a line that stops matching', () => {
+      app.setPayload(busy);
+      chip('Running').click();
+      const link = document.querySelector<HTMLElement>('.line-ref a');
+      link?.focus();
+      expect(document.activeElement).toBe(link);
+
+      app.setPayload(
+        payload([
+          repositoryView('o/r', [
+            lineIn('success'),
+            prLine(1, { runs: [runView({ state: 'failure' })] }),
+            prLine(2, { runs: [runView({ state: 'success' })] }),
+          ]),
+        ]),
+      );
+      expect(refs()).toEqual([]);
+      expect(document.activeElement).toBe(chip('Running'));
+    });
+
+    it('starts from the statuses in the address', () => {
+      history.replaceState(null, '', '/?status=passed');
+      document.body.innerHTML = PAGE_SKELETON;
+      const reloaded = new App(document, () => now);
+      reloaded.setPayload(busy);
+      expect(refs()).toEqual(['#2']);
+      expect(chip('Passed').getAttribute('aria-pressed')).toBe('true');
+    });
   });
 
   it('needs the button of the page skeleton', () => {

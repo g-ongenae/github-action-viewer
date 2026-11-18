@@ -3,6 +3,7 @@
 
 import type { Snapshot } from '../core/snapshot.ts';
 import type { ConnectionState } from './connection.ts';
+import { countStatuses } from './filter.ts';
 import { STATE_PRESENTATION, type Tone } from './states.ts';
 
 export const PAGE_TITLE = 'My GitHub Actions';
@@ -11,7 +12,7 @@ export const PAGE_TITLE = 'My GitHub Actions';
  * Lines counted by what they are doing now. A line counts once per category, and may be in
  * several. What is active comes from all of a line's runs, including runs still active on an
  * older commit (the core keeps those); failures come from the newest commit only. The summary,
- * tab title and favicon all derive from this.
+ * tab title and favicon all derive from this; the categories are the status filter's (`filter.ts`).
  */
 export interface PageSummary {
   /** Lines with a run in progress or queued. */
@@ -23,23 +24,8 @@ export interface PageSummary {
 }
 
 export function summarise(snapshot: Snapshot | null): PageSummary {
-  let running = 0;
-  let failed = 0;
-  let waiting = 0;
-  for (const repository of snapshot?.repositories ?? []) {
-    for (const line of repository.lines) {
-      if (line.runs.some((run) => run.state === 'in_progress' || run.state === 'queued')) {
-        running += 1;
-      }
-      if (line.failed > 0) {
-        failed += 1;
-      }
-      if (line.runs.some((run) => run.state === 'waiting' || run.state === 'action_required')) {
-        waiting += 1;
-      }
-    }
-  }
-  return { running, failed, waiting };
+  const counts = countStatuses(snapshot?.repositories ?? []);
+  return { running: counts.running, failed: counts.failed, waiting: counts.waiting };
 }
 
 export interface SummaryPart {

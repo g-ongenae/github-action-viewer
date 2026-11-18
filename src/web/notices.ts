@@ -2,10 +2,11 @@
 // problems reported by the collection) and the message shown when there are no repositories.
 // Pure functions of the payload: the renderer turns them into DOM.
 
-import type { Problem } from '../core/snapshot.ts';
+import type { Problem, RepositoryView } from '../core/snapshot.ts';
 import type { PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
-import { formatAgo, formatClock, formatDuration, formatIn } from './format.ts';
+import { LINE_STATUSES, lineCount, STATUS_PRESENTATION, type LineStatus } from './filter.ts';
+import { formatAgo, formatClock, formatDuration, formatIn, plural } from './format.ts';
 
 /** `warning`: something the reader may want to act on; `info`: worth knowing, nothing to do. */
 export type NoticeTone = 'warning' | 'info';
@@ -194,6 +195,24 @@ export function emptyState(
             { code: 'config.json' },
             ' (see the README); changes apply as soon as the file is saved.',
           ],
+    ],
+  };
+}
+
+/** What the page shows when the status filter hides every line of `repositories`. */
+export function filteredOutState(
+  repositories: readonly RepositoryView[],
+  selected: ReadonlySet<LineStatus>,
+): EmptyState {
+  const hidden = lineCount(repositories);
+  const shown = LINE_STATUSES.filter((status) => selected.has(status))
+    .map((status) => STATUS_PRESENTATION[status].label)
+    .join(', ');
+  return {
+    key: 'filtered-out',
+    title: 'No line matches the filter.',
+    paragraphs: [
+      [`Showing only ${shown}: ${plural(hidden, 'line')} hidden. “Show all” shows them.`],
     ],
   };
 }
