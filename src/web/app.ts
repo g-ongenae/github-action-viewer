@@ -14,6 +14,7 @@ export class App {
   readonly #renderer: PageRenderer;
   readonly #dialog: RepositoryDialog;
   readonly #filterBar: FilterBar;
+  readonly #document: Document;
   readonly #now: () => number;
   #payload: PagePayload | null = null;
   #connection: ConnectionState = 'connecting';
@@ -36,6 +37,7 @@ export class App {
         describeFilter(this.#payload?.snapshot?.repositories ?? [], this.#filterBar.selected),
       );
     });
+    this.#document = document;
     this.#now = now;
     this.render();
   }
@@ -92,6 +94,7 @@ export class App {
 
   /** Re-renders with the current time, so that relative times keep ticking. */
   render(): void {
+    const focused = this.#document.activeElement;
     const repositories = this.#payload?.snapshot?.repositories ?? [];
     this.#filterBar.update(repositories.length === 0 ? null : countStatuses(repositories));
     this.#renderer.render({
@@ -100,5 +103,9 @@ export class App {
       now: this.#now(),
       filter: this.#filterBar.selected,
     });
+    // A line that stopped matching the filter took the focus with it: keep the reader near it.
+    if (focused instanceof HTMLElement && !focused.isConnected) {
+      this.#filterBar.takeFocus();
+    }
   }
 }

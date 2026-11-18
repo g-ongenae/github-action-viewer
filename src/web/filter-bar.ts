@@ -78,6 +78,14 @@ export class FilterBar {
     }
   }
 
+  /** Focuses the first pressed chip; does nothing while every line shows or the chips are hidden. */
+  takeFocus(): void {
+    const first = LINE_STATUSES.find((status) => this.#selected.has(status));
+    if (first !== undefined && !this.#container.hidden) {
+      this.#chips.get(first)?.button.focus({ preventScroll: true });
+    }
+  }
+
   #select(selected: ReadonlySet<LineStatus>): void {
     this.#selected = selected;
     this.#updateChips();

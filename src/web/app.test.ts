@@ -181,6 +181,26 @@ describe('App', () => {
       expect(text('#announcer')).toBe('No line matches the filter; 3 lines hidden.');
     });
 
+    it('keeps the focus near a line that stops matching', () => {
+      app.setPayload(busy);
+      chip('Running').click();
+      const link = document.querySelector<HTMLElement>('.line-ref a');
+      link?.focus();
+      expect(document.activeElement).toBe(link);
+
+      app.setPayload(
+        payload([
+          repositoryView('o/r', [
+            lineIn('success'),
+            prLine(1, { runs: [runView({ state: 'failure' })] }),
+            prLine(2, { runs: [runView({ state: 'success' })] }),
+          ]),
+        ]),
+      );
+      expect(refs()).toEqual([]);
+      expect(document.activeElement).toBe(chip('Running'));
+    });
+
     it('starts from the statuses in the address', () => {
       history.replaceState(null, '', '/?status=passed');
       document.body.innerHTML = PAGE_SKELETON;
