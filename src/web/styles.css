@@ -272,6 +272,71 @@ h1 {
   white-space: pre-wrap;
 }
 
+/* Status filter ---------------------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 1.25rem;
+}
+
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.2rem 0.6rem 0.2rem 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filter:hover {
+  background: var(--hover);
+}
+
+.filter .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--tone);
+}
+
+.filter-count {
+  color: var(--muted);
+}
+
+.filter-is-empty {
+  color: var(--muted);
+}
+
+.filter-is-empty .icon {
+  opacity: 0.5;
+}
+
+.filter[aria-pressed='true'] {
+  border-color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 14%, var(--surface));
+  color: var(--text);
+  font-weight: 600;
+}
+
+.filter[aria-pressed='true'] .filter-count {
+  color: var(--text);
+}
+
+.filter-clear {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
 /* Empty states ----------------------------------------------------------------------------- */
 
 .empty {

@@ -1,8 +1,10 @@
 // The page's state: the latest payload, the latest heartbeat's fresher timestamps and quotas,
-// and the connection. Every change re-renders (cheaply: see render.ts).
+// the connection, and the status filter. Every change re-renders (cheaply: see render.ts).
 
 import type { Heartbeat, PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
+import { FilterBar } from './filter-bar.ts';
+import { countStatuses } from './filter.ts';
 import { PageRenderer } from './render.ts';
 import { RepositoryDialog } from './repository-dialog.ts';
 import { describeChanges } from './summary.ts';
@@ -11,6 +13,7 @@ import { createWatchListApi, type WatchListApi } from './watch-list-api.ts';
 export class App {
   readonly #renderer: PageRenderer;
   readonly #dialog: RepositoryDialog;
+  readonly #filterBar: FilterBar;
   readonly #now: () => number;
   #payload: PagePayload | null = null;
   #connection: ConnectionState = 'connecting';
@@ -27,6 +30,9 @@ export class App {
       throw new Error('The page has no #add-repository button.');
     }
     this.#dialog = new RepositoryDialog(document, opener, api);
+    this.#filterBar = new FilterBar(document, () => {
+      this.render();
+    });
     this.#now = now;
     this.render();
   }
@@ -83,10 +89,13 @@ export class App {
 
   /** Re-renders with the current time, so that relative times keep ticking. */
   render(): void {
+    const repositories = this.#payload?.snapshot?.repositories ?? [];
+    this.#filterBar.update(repositories.length === 0 ? null : countStatuses(repositories));
     this.#renderer.render({
       payload: this.#payload,
       connection: this.#connection,
       now: this.#now(),
+      filter: this.#filterBar.selected,
     });
   }
 }

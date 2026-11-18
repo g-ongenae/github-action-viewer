@@ -167,6 +167,7 @@ export const PAGE_SKELETON = `
     <button id="add-repository" type="button" hidden>Add repository</button>
   </header>
   <ul id="notices" hidden></ul>
+  <div id="filters" hidden></div>
   <main><div id="empty"></div><div id="repositories"></div></main>
   <p id="announcer" role="status"></p>
 `;

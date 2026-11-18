@@ -17,9 +17,16 @@ import {
   setLink,
   setText,
 } from './dom.ts';
+import { filterRepositories, type LineStatus } from './filter.ts';
 import { formatAgo, formatExact, plural } from './format.ts';
 import { setStateIcon } from './icons.ts';
-import { collectNotices, emptyState, type EmptyState, type Notice } from './notices.ts';
+import {
+  collectNotices,
+  emptyState,
+  filteredOutState,
+  type EmptyState,
+  type Notice,
+} from './notices.ts';
 import { currentRunCount, lineNote, STATE_PRESENTATION } from './states.ts';
 import { summarise, summaryParts, tabState } from './summary.ts';
 import { branchRunsUrl } from './urls.ts';
@@ -30,6 +37,8 @@ export interface ViewState {
   readonly connection: ConnectionState;
   /** Current time, milliseconds since the epoch. */
   readonly now: number;
+  /** Statuses of the lines to show; empty for every line. */
+  readonly filter: ReadonlySet<LineStatus>;
 }
 
 const CONNECTION_LABELS: Readonly<Record<ConnectionState, string>> = {
@@ -95,12 +104,13 @@ export class PageRenderer {
 
     this.#renderStatus(view, snapshot === null ? null : summaryParts(summary));
     this.#renderNotices(collectNotices(view.payload, view.now));
-    this.#renderEmpty(emptyState(view.payload, view.connection));
-    this.#renderRepositories(
-      snapshot?.repositories ?? [],
-      view.payload?.status.staleRepositories ?? [],
-      view.now,
+    const repositories = snapshot?.repositories ?? [];
+    const shown = filterRepositories(repositories, view.filter);
+    this.#renderEmpty(
+      emptyState(view.payload, view.connection) ??
+        (shown.length === 0 ? filteredOutState(repositories, view.filter) : null),
     );
+    this.#renderRepositories(shown, view.payload?.status.staleRepositories ?? [], view.now);
 
     const tab = tabState(summary, view.connection);
     if (this.#document.title !== tab.title) {

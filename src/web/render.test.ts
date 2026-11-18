@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { RUN_STATE_PRECEDENCE } from '../core/run-state.ts';
 import type { PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
+import type { LineStatus } from './filter.ts';
 import { PageRenderer } from './render.ts';
 import {
   configStatus,
@@ -26,8 +27,9 @@ function render(
   shown: PagePayload | null,
   connection: ConnectionState = 'live',
   now: number = NOW,
+  filter: ReadonlySet<LineStatus> = new Set(),
 ): void {
-  renderer.render({ payload: shown, connection, now });
+  renderer.render({ payload: shown, connection, now, filter });
 }
 
 const $ = (selector: string): HTMLElement => {
@@ -393,6 +395,30 @@ describe('PageRenderer: notices and empty states', () => {
     expect(texts('#empty code')).toContain('config.json');
     render(twoRepositories());
     expect($('#empty').hidden).toBe(true);
+  });
+
+  it('shows only the lines of the chosen statuses, keeping expanded lines open', () => {
+    render(twoRepositories());
+    $('.repository:first-child .line[data-key="pr:7"] .line-toggle').click();
+
+    render(twoRepositories(), 'live', NOW, new Set(['failed']));
+    expect(texts('.repository-name')).toEqual(['octo-org/widgets']);
+    expect(texts('.line-ref')).toEqual(['#7']);
+    expect(lineOf('pr:7').querySelector<HTMLElement>('.line-panel')?.hidden).toBe(false);
+    // The summary and the tab still describe every line.
+    expect(document.title).toBe('2 running · 1 failed · My GitHub Actions');
+
+    render(twoRepositories(), 'live', NOW, new Set(['passed', 'waiting']));
+    expect(texts('.repository-name')).toEqual(['octo-org/gadgets']);
+  });
+
+  it('says so when the filter hides every line', () => {
+    render(twoRepositories(), 'live', NOW, new Set(['waiting', 'other']));
+    expect($$('.repository')).toHaveLength(0);
+    expect($('.empty-title').textContent).toBe('No line matches the filter.');
+    expect($('#empty p:last-child').textContent).toBe(
+      'Showing only Waiting, Other: 3 lines hidden. “Show all” shows them.',
+    );
   });
 
   it('announces politely, and only when there is something to say', () => {
