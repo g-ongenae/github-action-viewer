@@ -28,8 +28,12 @@ function render(
   connection: ConnectionState = 'live',
   now: number = NOW,
   filter: ReadonlySet<LineStatus> = new Set(),
+  done: { readonly done: ReadonlySet<string>; readonly showDone: boolean } = {
+    done: new Set(),
+    showDone: false,
+  },
 ): void {
-  renderer.render({ payload: shown, connection, now, filter });
+  renderer.render({ payload: shown, connection, now, filter, ...done });
 }
 
 const $ = (selector: string): HTMLElement => {
