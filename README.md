@@ -74,7 +74,17 @@ lines, and **Show all** to see every line again. They count like the summary: a 
 an older commit while its newest commit failed is both _Running_ and _Failed_; _Passed_ is a
 newest commit that passed; _Other_ gathers the lines that are none of these (cancelled, skipped,
 neutral, stale, unknown). The choice is kept in the page's address (`?status=failed,waiting`), so a
-reload or a bookmark keeps it; the summary, tab title and icon still describe every line.
+reload or a bookmark keeps it; the summary, tab title and icon still describe every line (except
+those marked as done).
+
+**Marking a line as done**: the check mark at the end of a line (it shows when the pointer is on
+the line, or with Tab) hides the line, like _Mark as done_ on GitHub's notifications. The line
+comes back by itself as soon as something new happens on it: a new commit, a new or re-run
+workflow, or its newest commit's verdict changing (a running commit that finishes). Lines marked
+as done no longer count in the summary, the tab title and icon, or the chips; the **Done** chip at
+the end of the row says how many there are and, pressed, shows them again, dimmed, where their
+check mark takes them back. The marks are kept in the browser (its local storage): they survive a
+reload and apply to every tab of that browser, but not to another browser or device.
 
 A repository the server could not refresh keeps its earlier lines, marked by a dashed rule and
 "may be out of date". The tab title repeats the summary, e.g. "2 running · 1 failed · My GitHub
