@@ -105,10 +105,10 @@ export class FilterBar {
     }
   }
 
-  /** Focuses the first pressed chip; does nothing while every line shows or the chips are hidden. */
+  /** Focuses the first pressed chip, or the first chip; does nothing while the chips are hidden. */
   takeFocus(): void {
-    const first = LINE_STATUSES.find((status) => this.#selected.has(status));
-    if (first !== undefined && !this.#container.hidden) {
+    const first = LINE_STATUSES.find((status) => this.#selected.has(status)) ?? LINE_STATUSES[0];
+    if (!this.#container.hidden) {
       this.#chips.get(first)?.button.focus({ preventScroll: true });
     }
   }

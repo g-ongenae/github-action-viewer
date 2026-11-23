@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { PagePayload } from '../server/payload.ts';
 import { App } from './app.ts';
 import type { WatchListApi } from './watch-list-api.ts';
 import {
@@ -232,6 +233,11 @@ describe('App', () => {
     };
     const doneChip = (): HTMLButtonElement | null =>
       document.querySelector<HTMLButtonElement>('.filter-done');
+    /** `shown`, as collected a minute after the other payloads. */
+    const later = (shown: PagePayload): PagePayload => ({
+      ...shown,
+      snapshot: shown.snapshot && { ...shown.snapshot, generatedAt: iso(-1) },
+    });
     const failedPr = prLine(1, { runs: [runView({ id: 10, state: 'failure' })] });
     const busy = payload([
       repositoryView('o/r', [lineIn('in_progress'), failedPr, prLine(2)]),
@@ -262,15 +268,17 @@ describe('App', () => {
 
       const rerun = prLine(1, { runs: [runView({ id: 10, state: 'in_progress', runAttempt: 2 })] });
       app.setPayload(
-        payload([
-          repositoryView('o/r', [lineIn('in_progress'), rerun, prLine(2)]),
-          repositoryView('o/other', [lineIn('success')]),
-        ]),
+        later(
+          payload([
+            repositoryView('o/r', [lineIn('in_progress'), rerun, prLine(2)]),
+            repositoryView('o/other', [lineIn('success')]),
+          ]),
+        ),
       );
       expect(refs()).toEqual(['main', '#1', '#2', 'main']);
       expect(doneChip()?.hidden).toBe(true);
       // Forgotten: the line is not hidden again if it goes back to how it was.
-      app.setPayload(busy);
+      app.setPayload(later(busy));
       expect(refs()).toEqual(['main', '#1', '#2', 'main']);
     });
 
@@ -293,6 +301,23 @@ describe('App', () => {
       // With no line done left, the chip let go: the next line marked as done hides at once.
       doneButton('#2').click();
       expect(refs()).toEqual(['main', '#1', 'main']);
+    });
+
+    it('keeps the focus on the chips when the “Done” chip goes away', () => {
+      app.setPayload(busy);
+      doneButton('#1').click();
+      doneChip()?.focus();
+      const pushed = prLine(1, { commit: { sha: 'b'.repeat(40), title: 'Fix', authorName: null } });
+      app.setPayload(
+        later(
+          payload([
+            repositoryView('o/r', [lineIn('in_progress'), pushed, prLine(2)]),
+            repositoryView('o/other', [lineIn('success')]),
+          ]),
+        ),
+      );
+      expect(doneChip()?.hidden).toBe(true);
+      expect(document.activeElement?.textContent).toMatch(/^Running/);
     });
 
     it('says when every line is done, and hands the focus to the “Done” chip', () => {

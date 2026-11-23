@@ -1,38 +1,54 @@
 import { describe, expect, it } from 'vitest';
-import { DoneLines, lineId, lineMark, withoutDone } from './done.ts';
+import { DoneLines, hasNewActivity, lineId, markOf, withoutDone } from './done.ts';
 import {
+  iso,
   lineIn,
   lineView,
   MemoryStorage,
   prLine,
   repositoryView,
   runView,
+  snapshot,
 } from './test-fixtures.ts';
 
 const STORAGE_KEY = 'github-action-viewer.done';
 
-describe('lineMark', () => {
-  const line = lineView({ runs: [runView({ id: 1 }), runView({ id: 2 })] });
+const storedIds = (storage: Storage): string[] =>
+  Object.keys(JSON.parse(storage.getItem(STORAGE_KEY) ?? '{}') as object);
 
-  it('stays while nothing new happens', () => {
-    expect(lineMark(lineView({ runs: [runView({ id: 2 }), runView({ id: 1 })] }))).toBe(
-      lineMark(line),
+describe('hasNewActivity', () => {
+  const line = lineView({ runs: [runView({ id: 1 }), runView({ id: 2 })] });
+  const mark = markOf(line, iso(1));
+
+  it('sees nothing new while runs only progress or drop out of the collection', () => {
+    expect(hasNewActivity(mark, lineView({ runs: [runView({ id: 2 }), runView({ id: 1 })] }))).toBe(
+      false,
     );
-    expect(lineMark({ ...line, updatedAt: '2026-11-13T12:30:00Z' })).toBe(lineMark(line));
-    const olderCommitRunning = lineView({
-      runs: [runView({ id: 1 }), runView({ id: 2 }), runView({ id: 3, superseded: true })],
-    });
-    expect(lineMark(olderCommitRunning)).toBe(lineMark(line));
+    expect(hasNewActivity(mark, { ...line, updatedAt: iso(0) })).toBe(false);
+    expect(hasNewActivity(mark, lineView({ runs: [runView({ id: 2 })] }))).toBe(false);
   });
 
-  it('changes with a new commit, a new run, a re-run or a new verdict', () => {
-    const marks = [
+  it('sees a new commit, a new run, a re-run, a new verdict or a run on an older commit', () => {
+    const changed = [
       lineView({ ...line, commit: { ...line.commit, sha: 'b'.repeat(40) } }),
       lineView({ runs: [runView({ id: 1 }), runView({ id: 2 }), runView({ id: 3 })] }),
       lineView({ runs: [runView({ id: 1 }), runView({ id: 2, runAttempt: 2 })] }),
       lineView({ runs: [runView({ id: 1 }), runView({ id: 2, state: 'failure' })] }),
-    ].map(lineMark);
-    expect(new Set([lineMark(line), ...marks]).size).toBe(5);
+      lineView({
+        runs: [
+          runView({ id: 1 }),
+          runView({ id: 2 }),
+          runView({ id: 0, state: 'waiting', superseded: true, headSha: 'old', runAttempt: 2 }),
+        ],
+      }),
+    ];
+    expect(changed.map((candidate) => hasNewActivity(mark, candidate))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
   });
 });
 
@@ -51,13 +67,14 @@ describe('withoutDone', () => {
 
 describe('DoneLines', () => {
   const passed = prLine(1);
-  const repository = repositoryView('o/r', [lineIn('failure'), passed]);
+  const failed = lineIn('failure');
+  const repository = repositoryView('o/r', [failed, passed]);
   const id = lineId(repository, passed);
 
-  it('remembers a line until it changes, in the storage', () => {
+  it('remembers a line until something new happens on it, in the storage', () => {
     const storage = new MemoryStorage();
     const done = new DoneLines(storage);
-    done.mark(repository, passed);
+    done.mark(repository, passed, iso(1));
     expect(done.doneIn([repository])).toEqual(new Set([id]));
     expect(new DoneLines(storage).doneIn([repository])).toEqual(new Set([id]));
 
@@ -69,35 +86,47 @@ describe('DoneLines', () => {
     expect(storage.getItem(STORAGE_KEY)).toBeNull();
   });
 
-  it('forgets the lines that changed or left the page', () => {
+  it('forgets, from a newer snapshot, the lines that saw new activity or left the page', () => {
     const storage = new MemoryStorage();
     const done = new DoneLines(storage);
     const other = repositoryView('o/other', [lineIn('success')]);
-    done.mark(repository, passed);
-    done.mark(repository, lineIn('failure'));
-    done.mark(other, lineIn('success'));
+    done.mark(repository, passed, iso(2));
+    done.mark(repository, failed, iso(2));
+    done.mark(other, lineIn('success'), iso(2));
 
     const failedAgain = lineView({ runs: [runView({ id: 9, state: 'failure' })] });
-    done.prune([repositoryView('o/r', [failedAgain, passed])]);
-    expect(JSON.parse(storage.getItem(STORAGE_KEY) ?? '')).toEqual({ [id]: lineMark(passed) });
+    const changed = [repositoryView('o/r', [failedAgain, passed])];
+    done.prune(snapshot(changed, { generatedAt: iso(2) }));
+    expect(storedIds(storage)).toHaveLength(3);
+
+    done.prune(snapshot(changed, { generatedAt: iso(1) }));
+    expect(storedIds(storage)).toEqual([id]);
     // The same line coming back as it was is not hidden again.
     expect(done.doneIn([repository, other])).toEqual(new Set([id]));
   });
 
-  it('reads what another tab wrote', () => {
+  it('keeps what other tabs change, even from a snapshot this one has not received', () => {
     const storage = new MemoryStorage();
-    const done = new DoneLines(storage);
-    new DoneLines(storage).mark(repository, passed);
-    expect(done.doneIn([repository])).toEqual(new Set());
-    done.reload();
-    expect(done.doneIn([repository])).toEqual(new Set([id]));
+    const tab = new DoneLines(storage);
+    const otherTab = new DoneLines(storage);
+    tab.mark(repository, passed, iso(1));
+    otherTab.mark(repository, failed, iso(1));
+    expect(tab.doneIn([repository])).toEqual(new Set([id]));
+    tab.reload();
+    expect(tab.doneIn([repository]).size).toBe(2);
+
+    // The other tab marked the re-run, which this tab has not seen yet: it does not prune it.
+    const rerun = prLine(1, { runs: [runView({ runAttempt: 2 })] });
+    otherTab.mark(repositoryView('o/r', [rerun]), rerun, iso(0.5));
+    tab.prune(snapshot([repository], { generatedAt: iso(1) }));
+    expect(otherTab.doneIn([repositoryView('o/r', [rerun])])).toEqual(new Set([id]));
   });
 
   it('starts empty from unreadable storage, and keeps marks in memory when it fails', () => {
     const storage = new MemoryStorage();
     storage.setItem(STORAGE_KEY, '{not json');
     expect(new DoneLines(storage).doneIn([repository])).toEqual(new Set());
-    storage.setItem(STORAGE_KEY, JSON.stringify({ [id]: 3 }));
+    storage.setItem(STORAGE_KEY, JSON.stringify({ [id]: { sha: 3 } }));
     expect(new DoneLines(storage).doneIn([repository])).toEqual(new Set());
 
     const failing = new MemoryStorage();
@@ -105,11 +134,12 @@ describe('DoneLines', () => {
       throw new Error('QuotaExceededError');
     };
     const done = new DoneLines(failing);
-    done.mark(repository, passed);
-    expect(done.doneIn([repository])).toEqual(new Set([id]));
+    done.mark(repository, passed, iso(1));
+    done.mark(repository, failed, iso(1));
+    expect(done.doneIn([repository]).size).toBe(2);
 
     const memoryOnly = new DoneLines(null);
-    memoryOnly.mark(repository, passed);
+    memoryOnly.mark(repository, passed, iso(1));
     expect(memoryOnly.doneIn([repository])).toEqual(new Set([id]));
   });
 });

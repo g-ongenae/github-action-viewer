@@ -80,9 +80,10 @@ those marked as done).
 **Marking a line as done**: the check mark at the end of a line (it shows when the pointer is on
 the line, or with Tab) hides the line, like _Mark as done_ on GitHub's notifications. The line
 comes back by itself as soon as something new happens on it: a new commit, a new or re-run
-workflow, or its newest commit's verdict changing (a running commit that finishes). Lines marked
-as done no longer count in the summary, the tab title and icon, or the chips; the **Done** chip at
-the end of the row says how many there are and, pressed, shows them again, dimmed, where their
+workflow (also on an older commit), or its newest commit's verdict changing (a running commit
+that finishes). Lines marked as done no longer count in the summary or the tab title and icon. The
+**Done** chip at the end of the row says how many there are; pressed, it puts them back among the
+other lines, shaded, where the status chips count and filter them like any other line, and their
 check mark takes them back. The marks are kept in the browser (its local storage): they survive a
 reload and apply to every tab of that browser, but not to another browser or device.
 

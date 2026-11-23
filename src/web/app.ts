@@ -67,7 +67,7 @@ export class App {
     const previous = this.#payload?.snapshot ?? null;
     this.#payload = payload;
     if (payload.snapshot !== null) {
-      this.#done.prune(payload.snapshot.repositories);
+      this.#done.prune(payload.snapshot);
     }
     this.render();
     this.#dialog.update({
@@ -129,8 +129,12 @@ export class App {
       done,
       showDone: this.#filterBar.showDone,
     });
-    // A line that stopped matching the filter took the focus with it: keep the reader near it.
-    if (focused instanceof HTMLElement && !focused.isConnected) {
+    // A line that stopped matching or was marked as done in another tab took the focus with it,
+    // or the “Done” chip went away: keep the reader near the lines.
+    if (
+      focused instanceof HTMLElement &&
+      (!focused.isConnected || focused.closest('[hidden]') !== null)
+    ) {
       this.#filterBar.takeFocus();
     }
   }
@@ -147,9 +151,9 @@ export class App {
     if (found === null) {
       return;
     }
-    const { repository, line } = found;
+    const { repository, line, seenAt } = found;
     if (done) {
-      this.#done.mark(repository, line);
+      this.#done.mark(repository, line, seenAt);
     } else {
       this.#done.unmark(repository, line);
     }
@@ -158,11 +162,12 @@ export class App {
     this.#renderer.announce(done ? `${name} marked as done.` : `${name} no longer done.`);
   }
 
-  #find(id: string): { repository: RepositoryView; line: LineView } | null {
-    for (const repository of this.#payload?.snapshot?.repositories ?? []) {
+  #find(id: string): { repository: RepositoryView; line: LineView; seenAt: string } | null {
+    const snapshot = this.#payload?.snapshot ?? null;
+    for (const repository of snapshot?.repositories ?? []) {
       const line = repository.lines.find((candidate) => lineId(repository, candidate) === id);
-      if (line !== undefined) {
-        return { repository, line };
+      if (snapshot !== null && line !== undefined) {
+        return { repository, line, seenAt: snapshot.generatedAt };
       }
     }
     return null;

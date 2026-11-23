@@ -620,9 +620,10 @@ main {
   color: var(--success);
 }
 
-/* Shown with the “Done” chip: there, but in the background. */
-.line-is-done > .line-row > :not(.line-done) {
-  opacity: 0.55;
+/* Shown with the “Done” chip: set back by a shaded row, with its text kept readable. */
+.line-is-done > .line-row {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rule) 55%, transparent);
 }
 
 .line-note {
@@ -783,8 +784,8 @@ main {
   .line-row {
     grid-template-columns: var(--col-state) minmax(0, 1fr) auto auto;
     grid-template-areas:
-      'state ref date done'
-      'text text text text'
+      'state ref date date'
+      'text text text done'
       'note note note note';
     column-gap: 0.5rem;
   }
@@ -800,6 +801,12 @@ main {
 
   .line-author {
     max-width: 40%;
+  }
+
+  .line-done {
+    width: 1.75rem;
+    height: 1.75rem;
+    margin: -0.3rem 0 0.45rem;
   }
 
   .line-note {
