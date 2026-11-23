@@ -1,8 +1,11 @@
 // The page's state: the latest payload, the latest heartbeat's fresher timestamps and quotas,
-// the connection, and the status filter. Every change re-renders (cheaply: see render.ts).
+// the connection, the status filter and the lines marked as done. Every change re-renders
+// (cheaply: see render.ts).
 
+import type { LineView, RepositoryView } from '../core/snapshot.ts';
 import type { Heartbeat, PagePayload } from '../server/payload.ts';
 import type { ConnectionState } from './connection.ts';
+import { DoneLines, lineId, localStorageOf, withoutDone } from './done.ts';
 import { FilterBar } from './filter-bar.ts';
 import { countStatuses, describeFilter } from './filter.ts';
 import { PageRenderer } from './render.ts';
@@ -14,6 +17,7 @@ export class App {
   readonly #renderer: PageRenderer;
   readonly #dialog: RepositoryDialog;
   readonly #filterBar: FilterBar;
+  readonly #done: DoneLines;
   readonly #document: Document;
   readonly #now: () => number;
   #payload: PagePayload | null = null;
@@ -24,8 +28,17 @@ export class App {
     document: Document,
     now: () => number = Date.now,
     api: WatchListApi = createWatchListApi(),
+    storage: Storage | null = localStorageOf(document.defaultView),
   ) {
-    this.#renderer = new PageRenderer(document);
+    this.#done = new DoneLines(storage);
+    this.#renderer = new PageRenderer(document, {
+      onDone: (id, done) => {
+        this.#setDone(id, done);
+      },
+      onFocusLost: () => {
+        this.#filterBar.focusDone();
+      },
+    });
     const opener = document.getElementById('add-repository');
     if (!(opener instanceof HTMLButtonElement)) {
       throw new Error('The page has no #add-repository button.');
@@ -34,8 +47,15 @@ export class App {
     this.#filterBar = new FilterBar(document, () => {
       this.render();
       this.#renderer.announce(
-        describeFilter(this.#payload?.snapshot?.repositories ?? [], this.#filterBar.selected),
+        describeFilter(this.#visible().repositories, this.#filterBar.selected),
       );
+    });
+    // Another tab marked a line as done, or not done.
+    document.defaultView?.addEventListener('storage', (event) => {
+      if (this.#done.concerns(event)) {
+        this.#done.reload();
+        this.render();
+      }
     });
     this.#document = document;
     this.#now = now;
@@ -46,6 +66,9 @@ export class App {
   setPayload(payload: PagePayload): void {
     const previous = this.#payload?.snapshot ?? null;
     this.#payload = payload;
+    if (payload.snapshot !== null) {
+      this.#done.prune(payload.snapshot.repositories);
+    }
     this.render();
     this.#dialog.update({
       config: payload.status.config,
@@ -95,17 +118,53 @@ export class App {
   /** Re-renders with the current time, so that relative times keep ticking. */
   render(): void {
     const focused = this.#document.activeElement;
-    const repositories = this.#payload?.snapshot?.repositories ?? [];
-    this.#filterBar.update(repositories.length === 0 ? null : countStatuses(repositories));
+    const { repositories, done } = this.#visible();
+    const empty = (this.#payload?.snapshot?.repositories.length ?? 0) === 0;
+    this.#filterBar.update(empty ? null : countStatuses(repositories), done.size);
     this.#renderer.render({
       payload: this.#payload,
       connection: this.#connection,
       now: this.#now(),
       filter: this.#filterBar.selected,
+      done,
+      showDone: this.#filterBar.showDone,
     });
     // A line that stopped matching the filter took the focus with it: keep the reader near it.
     if (focused instanceof HTMLElement && !focused.isConnected) {
       this.#filterBar.takeFocus();
     }
+  }
+
+  /** The lines the status filter applies to, and the ids of the lines marked as done. */
+  #visible(): { repositories: readonly RepositoryView[]; done: ReadonlySet<string> } {
+    const all = this.#payload?.snapshot?.repositories ?? [];
+    const done = this.#done.doneIn(all);
+    return { repositories: this.#filterBar.showDone ? all : withoutDone(all, done), done };
+  }
+
+  #setDone(id: string, done: boolean): void {
+    const found = this.#find(id);
+    if (found === null) {
+      return;
+    }
+    const { repository, line } = found;
+    if (done) {
+      this.#done.mark(repository, line);
+    } else {
+      this.#done.unmark(repository, line);
+    }
+    this.render();
+    const name = `${repository.fullName} ${line.label}`;
+    this.#renderer.announce(done ? `${name} marked as done.` : `${name} no longer done.`);
+  }
+
+  #find(id: string): { repository: RepositoryView; line: LineView } | null {
+    for (const repository of this.#payload?.snapshot?.repositories ?? []) {
+      const line = repository.lines.find((candidate) => lineId(repository, candidate) === id);
+      if (line !== undefined) {
+        return { repository, line };
+      }
+    }
+    return null;
   }
 }

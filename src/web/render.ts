@@ -17,10 +17,12 @@ import {
   setLink,
   setText,
 } from './dom.ts';
-import { filterRepositories, type LineStatus } from './filter.ts';
+import { lineId, withoutDone } from './done.ts';
+import { filterRepositories, lineCount, type LineStatus } from './filter.ts';
 import { formatAgo, formatExact, plural } from './format.ts';
-import { setStateIcon } from './icons.ts';
+import { checkIcon, setStateIcon } from './icons.ts';
 import {
+  allDoneState,
   collectNotices,
   emptyState,
   filteredOutState,
@@ -39,6 +41,17 @@ export interface ViewState {
   readonly now: number;
   /** Statuses of the lines to show; empty for every line. */
   readonly filter: ReadonlySet<LineStatus>;
+  /** Ids of the lines marked as done (see `lineId`). */
+  readonly done: ReadonlySet<string>;
+  /** Whether the lines marked as done show too; they never count in the summary. */
+  readonly showDone: boolean;
+}
+
+export interface RendererOptions {
+  /** The reader pressed a line's “Done” button: `done` says whether the line is now done. */
+  readonly onDone?: (lineId: string, done: boolean) => void;
+  /** A line marked as done left the page with the focus, and no other line is left to take it. */
+  readonly onFocusLost?: () => void;
 }
 
 const CONNECTION_LABELS: Readonly<Record<ConnectionState, string>> = {
@@ -58,6 +71,7 @@ interface LineParts {
   readonly title: HTMLElement;
   readonly prTitle: HTMLElement;
   readonly author: HTMLElement;
+  readonly done: HTMLButtonElement;
   readonly note: HTMLElement;
   readonly panel: HTMLElement;
   readonly commit: HTMLElement;
@@ -70,6 +84,7 @@ interface LineContext {
   readonly repository: RepositoryView;
   readonly line: LineView;
   readonly now: number;
+  readonly done: boolean;
 }
 
 export class PageRenderer {
@@ -80,13 +95,15 @@ export class PageRenderer {
   readonly #repositories: HTMLElement;
   readonly #announcer: HTMLElement;
   readonly #favicon: HTMLLinkElement | null;
+  readonly #options: RendererOptions;
   /** Lines the reader expanded, by `<repository>\n<line key>`; survives a line disappearing. */
   readonly #expanded = new Set<string>();
   readonly #lineParts = new WeakMap<HTMLElement, LineParts>();
   #nextId = 0;
 
-  constructor(document: Document) {
+  constructor(document: Document, options: RendererOptions = {}) {
     this.#document = document;
+    this.#options = options;
     this.#status = required(document, 'status');
     this.#notices = required(document, 'notices');
     this.#empty = required(document, 'empty');
@@ -100,17 +117,28 @@ export class PageRenderer {
     const focused = this.#document.activeElement;
     const selection = saveSelection(this.#document);
     const snapshot = view.payload?.snapshot ?? null;
-    const summary = summarise(snapshot);
+    const repositories = snapshot?.repositories ?? [];
+    const open = withoutDone(repositories, view.done);
+    const summary = summarise(open);
 
     this.#renderStatus(view, snapshot === null ? null : summaryParts(summary));
     this.#renderNotices(collectNotices(view.payload, view.now));
-    const repositories = snapshot?.repositories ?? [];
-    const shown = filterRepositories(repositories, view.filter);
+    const visible = view.showDone ? repositories : open;
+    const shown = filterRepositories(visible, view.filter);
     this.#renderEmpty(
       emptyState(view.payload, view.connection) ??
-        (shown.length === 0 ? filteredOutState(repositories, view.filter) : null),
+        (shown.length > 0
+          ? null
+          : lineCount(visible) === 0
+            ? allDoneState(view.done.size)
+            : filteredOutState(visible, view.filter)),
     );
-    this.#renderRepositories(shown, view.payload?.status.staleRepositories ?? [], view.now);
+    this.#renderRepositories(
+      shown,
+      view.payload?.status.staleRepositories ?? [],
+      view.now,
+      view.done,
+    );
 
     const tab = tabState(summary, view.connection);
     if (this.#document.title !== tab.title) {
@@ -241,6 +269,7 @@ export class PageRenderer {
     repositories: readonly RepositoryView[],
     staleRepositories: readonly StaleRepository[],
     now: number,
+    done: ReadonlySet<string>,
   ): void {
     const stale = new Map(
       staleRepositories.map((entry) => [entry.fullName.toLowerCase(), entry.lastRefreshedAt]),
@@ -256,6 +285,7 @@ export class PageRenderer {
           repository,
           stale.get(repository.fullName.toLowerCase()) ?? null,
           now,
+          done,
         );
       },
     );
@@ -281,6 +311,7 @@ export class PageRenderer {
     repository: RepositoryView,
     lastRefreshedAt: string | null,
     now: number,
+    done: ReadonlySet<string>,
   ): void {
     const header = section.firstElementChild;
     const heading = header?.firstElementChild;
@@ -308,7 +339,7 @@ export class PageRenderer {
       (line) => line.key,
       () => this.#createLine(),
       (item, line) => {
-        this.#updateLine(item, { repository, line, now });
+        this.#updateLine(item, { repository, line, now, done: done.has(lineId(repository, line)) });
       },
     );
   }
@@ -333,8 +364,13 @@ export class PageRenderer {
     const prTitle = element('bdi', 'line-pr-title');
     const author = element('bdi', 'line-author');
     text.append(title, prTitle, author);
+    const done = element('button', 'line-done');
+    done.type = 'button';
+    const doneLabel = element('span', 'visually-hidden');
+    doneLabel.textContent = 'Done';
+    done.append(checkIcon(), doneLabel);
     const note = element('p', 'line-note');
-    row.append(toggle, ref, date, text, note);
+    row.append(toggle, ref, date, text, done, note);
 
     const panel = element('div', 'line-panel');
     panel.id = this.#id('runs');
@@ -356,6 +392,7 @@ export class PageRenderer {
       title,
       prTitle,
       author,
+      done,
       note,
       panel,
       commit,
@@ -376,23 +413,61 @@ export class PageRenderer {
       }
       setExpanded(toggle, panel, open);
     });
+    done.addEventListener('click', () => {
+      this.#toggleDone(item, done);
+    });
     return item;
   }
 
-  #updateLine(item: HTMLElement, { repository, line, now }: LineContext): void {
+  /**
+   * Marks the line of `item` as done, or not done. A line that leaves the page hands the focus
+   * to the next line, or the previous one, as GitHub's notifications do.
+   */
+  #toggleDone(item: HTMLElement, button: HTMLButtonElement): void {
+    const id = item.dataset.lineId;
+    if (id === undefined) {
+      return;
+    }
+    const lines = [...this.#repositories.querySelectorAll<HTMLElement>('.line')];
+    const index = lines.indexOf(item);
+    const neighbours = [...lines.slice(index + 1), ...lines.slice(0, index).reverse()];
+    this.#options.onDone?.(id, button.getAttribute('aria-pressed') !== 'true');
+    if (item.isConnected) {
+      return;
+    }
+    const next = neighbours.find((line) => line.isConnected);
+    if (next === undefined) {
+      this.#options.onFocusLost?.();
+    } else {
+      this.#lineParts.get(next)?.done.focus();
+    }
+  }
+
+  #updateLine(item: HTMLElement, { repository, line, now, done }: LineContext): void {
     const parts = this.#lineParts.get(item);
     if (parts === undefined) {
       return;
     }
     const presentation = STATE_PRESENTATION[line.state];
-    const lineId = `${repository.fullName}\n${line.key}`;
-    item.dataset.lineId = lineId;
-    setClassName(item, `line state-${line.state} tone-${presentation.tone}`);
+    const id = lineId(repository, line);
+    item.dataset.lineId = id;
+    setClassName(
+      item,
+      `line state-${line.state} tone-${presentation.tone}${done ? ' line-is-done' : ''}`,
+    );
 
     setStateIcon(parts.toggle, line.state);
     setText(parts.stateLabel, presentation.label);
     setText(parts.toggleHint, `, ${plural(line.runs.length, 'workflow run')}`);
-    setExpanded(parts.toggle, parts.panel, this.#expanded.has(lineId));
+    setExpanded(parts.toggle, parts.panel, this.#expanded.has(id));
+    setAttribute(parts.done, 'aria-pressed', String(done));
+    setAttribute(
+      parts.done,
+      'title',
+      done
+        ? 'Marked as done: press to show it again'
+        : 'Mark as done: hide it until something new happens on it',
+    );
 
     const pr = line.pullRequest;
     const refUrl = pr === null ? branchRunsUrl(repository.url, branchName(line)) : pr.url;

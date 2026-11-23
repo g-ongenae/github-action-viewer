@@ -1,5 +1,5 @@
 // The notices under the heading (stale data, configuration problems, slowed-down polling,
-// problems reported by the collection) and the message shown when there are no repositories.
+// problems reported by the collection) and the message shown when no line is shown.
 // Pure functions of the payload: the renderer turns them into DOM.
 
 import type { Problem, RepositoryView } from '../core/snapshot.ts';
@@ -213,6 +213,19 @@ export function filteredOutState(
     title: 'No line matches the filter.',
     paragraphs: [
       [`Showing only ${shown}: ${plural(hidden, 'line')} hidden. “Show all” shows them.`],
+    ],
+  };
+}
+
+/** What the page shows when every line is marked as done. */
+export function allDoneState(done: number): EmptyState {
+  return {
+    key: 'all-done',
+    title: 'All done.',
+    paragraphs: [
+      [
+        `${plural(done, 'line')} marked as done. A line comes back by itself when something new happens on it; “Done” shows them.`,
+      ],
     ],
   };
 }

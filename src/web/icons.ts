@@ -82,3 +82,19 @@ export function setStateIcon(container: Element, state: RunState): void {
     container.insertBefore(icon, container.querySelector(':scope > .state-label'));
   }
 }
+
+/** A check mark, decorative (`aria-hidden`), for the buttons that mark a line as done. */
+export function checkIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '16');
+  svg.setAttribute('height', '16');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('class', 'icon icon-check');
+  const glyph = document.createElementNS(SVG, 'path');
+  glyph.setAttribute('d', 'M3 8.5l3.2 3.2L13 4.8');
+  glyph.setAttribute('class', 'icon-glyph');
+  svg.append(glyph);
+  return svg;
+}

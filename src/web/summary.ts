@@ -1,7 +1,7 @@
 // The page at a glance: the summary next to the heading, the tab title and favicon, and the
 // short announcements made to assistive technology when something finishes.
 
-import type { Snapshot } from '../core/snapshot.ts';
+import type { RepositoryView, Snapshot } from '../core/snapshot.ts';
 import type { ConnectionState } from './connection.ts';
 import { countStatuses } from './filter.ts';
 import { STATE_PRESENTATION, type Tone } from './states.ts';
@@ -23,8 +23,8 @@ export interface PageSummary {
   readonly waiting: number;
 }
 
-export function summarise(snapshot: Snapshot | null): PageSummary {
-  const counts = countStatuses(snapshot?.repositories ?? []);
+export function summarise(repositories: readonly RepositoryView[]): PageSummary {
+  const counts = countStatuses(repositories);
   return { running: counts.running, failed: counts.failed, waiting: counts.waiting };
 }
 

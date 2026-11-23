@@ -2,11 +2,13 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './app.ts';
+import type { WatchListApi } from './watch-list-api.ts';
 import {
   configStatus,
   heartbeat,
   iso,
   lineIn,
+  MemoryStorage,
   NOW,
   PAGE_SKELETON,
   payload,
@@ -17,15 +19,19 @@ import {
 
 let now = NOW;
 let app: App;
+let storage: MemoryStorage;
+
+const api: WatchListApi = {
+  catalogue: () => Promise.resolve({ ok: true, value: { repositories: [], complete: true } }),
+  add: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
+  remove: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
+};
 
 beforeEach(() => {
   now = NOW;
+  storage = new MemoryStorage();
   document.body.innerHTML = PAGE_SKELETON;
-  app = new App(document, () => now, {
-    catalogue: () => Promise.resolve({ ok: true, value: { repositories: [], complete: true } }),
-    add: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
-    remove: () => Promise.resolve({ ok: false, message: 'Not in this test.' }),
-  });
+  app = new App(document, () => now, api, storage);
 });
 
 const text = (selector: string): string | null =>
@@ -133,7 +139,7 @@ describe('App', () => {
     it('counts the lines of each status', () => {
       app.setPayload(busy);
       expect(
-        [...document.querySelectorAll('.filter')].map((button) => [
+        [...document.querySelectorAll('.filter:not(.filter-done)')].map((button) => [
           button.querySelector('.filter-label')?.textContent,
           button.querySelector('.filter-count')?.textContent,
           button.classList.contains('filter-is-empty'),
@@ -208,6 +214,109 @@ describe('App', () => {
       reloaded.setPayload(busy);
       expect(refs()).toEqual(['#2']);
       expect(chip('Passed').getAttribute('aria-pressed')).toBe('true');
+    });
+  });
+
+  describe('lines marked as done', () => {
+    const refs = (): string[] =>
+      [...document.querySelectorAll('.line-ref')].map((ref) => ref.textContent);
+    const doneButton = (ref: string): HTMLButtonElement => {
+      const line = [...document.querySelectorAll('.line')].find(
+        (item) => item.querySelector('.line-ref')?.textContent === ref,
+      );
+      const button = line?.querySelector<HTMLButtonElement>('.line-done');
+      if (button == null) {
+        throw new Error(`No line ${ref}`);
+      }
+      return button;
+    };
+    const doneChip = (): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>('.filter-done');
+    const failedPr = prLine(1, { runs: [runView({ id: 10, state: 'failure' })] });
+    const busy = payload([
+      repositoryView('o/r', [lineIn('in_progress'), failedPr, prLine(2)]),
+      repositoryView('o/other', [lineIn('success')]),
+    ]);
+
+    it('hides a line, leaves it out of the summary and moves the focus to the next one', () => {
+      app.setConnection('live');
+      app.setPayload(busy);
+      expect(document.title).toBe('1 running · 1 failed · My GitHub Actions');
+      expect(doneChip()?.hidden).toBe(true);
+
+      doneButton('#1').focus();
+      doneButton('#1').click();
+      expect(refs()).toEqual(['main', '#2', 'main']);
+      expect(document.title).toBe('1 running · My GitHub Actions');
+      expect(text('#announcer')).toBe('o/r #1 marked as done.');
+      expect(document.activeElement).toBe(doneButton('#2'));
+      expect(doneChip()?.hidden).toBe(false);
+      expect(doneChip()?.querySelector('.filter-count')?.textContent).toBe('1');
+    });
+
+    it('shows the line again when something new happens on it', () => {
+      app.setPayload(busy);
+      doneButton('#1').click();
+      app.setPayload(busy);
+      expect(refs()).toEqual(['main', '#2', 'main']);
+
+      const rerun = prLine(1, { runs: [runView({ id: 10, state: 'in_progress', runAttempt: 2 })] });
+      app.setPayload(
+        payload([
+          repositoryView('o/r', [lineIn('in_progress'), rerun, prLine(2)]),
+          repositoryView('o/other', [lineIn('success')]),
+        ]),
+      );
+      expect(refs()).toEqual(['main', '#1', '#2', 'main']);
+      expect(doneChip()?.hidden).toBe(true);
+      // Forgotten: the line is not hidden again if it goes back to how it was.
+      app.setPayload(busy);
+      expect(refs()).toEqual(['main', '#1', '#2', 'main']);
+    });
+
+    it('shows the lines marked as done with the “Done” chip, and takes them back', () => {
+      app.setPayload(busy);
+      doneButton('#1').click();
+      doneChip()?.click();
+      expect(doneChip()?.getAttribute('aria-pressed')).toBe('true');
+      expect(refs()).toEqual(['main', '#1', '#2', 'main']);
+      expect(doneButton('#1').getAttribute('aria-pressed')).toBe('true');
+      expect(doneButton('#1').closest('.line')?.classList.contains('line-is-done')).toBe(true);
+      expect(document.title).toBe('1 running · My GitHub Actions');
+
+      doneButton('#1').click();
+      expect(text('#announcer')).toBe('o/r #1 no longer done.');
+      expect(doneButton('#1').getAttribute('aria-pressed')).toBe('false');
+      expect(doneChip()?.hidden).toBe(true);
+      expect(document.title).toBe('1 running · 1 failed · My GitHub Actions');
+
+      // With no line done left, the chip let go: the next line marked as done hides at once.
+      doneButton('#2').click();
+      expect(refs()).toEqual(['main', '#1', 'main']);
+    });
+
+    it('says when every line is done, and hands the focus to the “Done” chip', () => {
+      app.setPayload(payload([repositoryView('o/r', [failedPr])]));
+      doneButton('#1').focus();
+      doneButton('#1').click();
+      expect(refs()).toEqual([]);
+      expect(text('.empty-title')).toBe('All done.');
+      expect(document.activeElement).toBe(doneChip());
+    });
+
+    it('keeps the lines done across reloads and tabs', () => {
+      app.setPayload(busy);
+      doneButton('#1').click();
+
+      document.body.innerHTML = PAGE_SKELETON;
+      const reloaded = new App(document, () => now, api, storage);
+      reloaded.setPayload(busy);
+      expect(refs()).toEqual(['main', '#2', 'main']);
+
+      // Another tab takes it back.
+      storage.clear();
+      window.dispatchEvent(new StorageEvent('storage', { key: 'github-action-viewer.done' }));
+      expect(refs()).toEqual(['main', '#1', '#2', 'main']);
     });
   });
 

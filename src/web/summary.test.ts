@@ -13,7 +13,7 @@ const busy = snapshot([
 
 describe('summarise', () => {
   it('counts running, failed and waiting lines', () => {
-    expect(summarise(busy)).toEqual({ running: 2, failed: 2, waiting: 1 });
+    expect(summarise(busy.repositories)).toEqual({ running: 2, failed: 2, waiting: 1 });
   });
 
   it('counts a wait for approval that is only left on an older commit', () => {
@@ -24,7 +24,7 @@ describe('summarise', () => {
       ],
     });
     expect(line).toMatchObject({ state: 'waiting', commitState: 'success', active: true });
-    const summary = summarise(snapshot([repositoryView('o/r', [line])]));
+    const summary = summarise([repositoryView('o/r', [line])]);
     expect(summary).toEqual({ running: 0, failed: 0, waiting: 1 });
     expect(summaryParts(summary)).toEqual([{ text: '1 waiting', tone: 'attention' }]);
     expect(tabState(summary, 'live').title).toBe('1 waiting · My GitHub Actions');
@@ -38,21 +38,21 @@ describe('summarise', () => {
         runView({ id: 3, state: 'queued', superseded: true, headSha: 'older' }),
       ],
     });
-    expect(summarise(snapshot([repositoryView('o/r', [line])]))).toEqual({
+    expect(summarise([repositoryView('o/r', [line])])).toEqual({
       running: 1,
       failed: 1,
       waiting: 0,
     });
   });
 
-  it('counts nothing without a snapshot', () => {
-    expect(summarise(null)).toEqual({ running: 0, failed: 0, waiting: 0 });
+  it('counts nothing without lines', () => {
+    expect(summarise([])).toEqual({ running: 0, failed: 0, waiting: 0 });
   });
 });
 
 describe('summaryParts', () => {
   it('lists what is going on, with tones', () => {
-    expect(summaryParts(summarise(busy))).toEqual([
+    expect(summaryParts(summarise(busy.repositories))).toEqual([
       { text: '2 running', tone: 'active' },
       { text: '2 failed', tone: 'failure' },
       { text: '1 waiting', tone: 'attention' },

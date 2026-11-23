@@ -337,6 +337,11 @@ h1 {
   font-size: 0.8125rem;
 }
 
+/* The lines marked as done sit apart from the statuses, at the far end. */
+.filter-done {
+  margin-left: auto;
+}
+
 /* Empty states ----------------------------------------------------------------------------- */
 
 .empty {
@@ -445,10 +450,10 @@ main {
 
 .line-row {
   display: grid;
-  grid-template-columns: var(--col-state) var(--col-ref) var(--col-date) minmax(0, 1fr);
+  grid-template-columns: var(--col-state) var(--col-ref) var(--col-date) minmax(0, 1fr) auto;
   grid-template-areas:
-    'state ref date text'
-    '. note note note';
+    'state ref date text done'
+    '. note note note .';
   column-gap: var(--col-gap);
   align-items: center;
 }
@@ -570,6 +575,54 @@ main {
 
 .line-pr-title:not([hidden]) + .line-author {
   margin-left: 0;
+}
+
+.line-done {
+  grid-area: done;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.line-done .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Out of the way until the reader points at the line or reaches the button. */
+@media (hover: hover) {
+  .line-done[aria-pressed='false'] {
+    opacity: 0;
+  }
+
+  .line-row:hover .line-done,
+  .line-done:focus-visible {
+    opacity: 1;
+  }
+}
+
+.line-done:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.line-done[aria-pressed='true'] {
+  border-color: var(--rule);
+  color: var(--success);
+}
+
+/* Shown with the “Done” chip: there, but in the background. */
+.line-is-done > .line-row > :not(.line-done) {
+  opacity: 0.55;
 }
 
 .line-note {
@@ -728,11 +781,11 @@ main {
 
 @container page (max-width: 44rem) {
   .line-row {
-    grid-template-columns: var(--col-state) minmax(0, 1fr) auto;
+    grid-template-columns: var(--col-state) minmax(0, 1fr) auto auto;
     grid-template-areas:
-      'state ref date'
-      'text text text'
-      'note note note';
+      'state ref date done'
+      'text text text text'
+      'note note note note';
     column-gap: 0.5rem;
   }
 
