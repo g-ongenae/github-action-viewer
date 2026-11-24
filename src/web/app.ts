@@ -130,7 +130,7 @@ export class App {
       showDone: this.#filterBar.showDone,
     });
     // A line that stopped matching or was marked as done in another tab took the focus with it,
-    // or the “Done” chip went away: keep the reader near the lines.
+    // or “Include done” went away: keep the reader near the lines.
     if (
       focused instanceof HTMLElement &&
       (!focused.isConnected || focused.closest('[hidden]') !== null)

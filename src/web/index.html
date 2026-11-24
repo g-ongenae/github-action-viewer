@@ -11,18 +11,48 @@
   </head>
   <body>
     <header class="page-header">
-      <h1>My GitHub Actions</h1>
-      <p class="status" id="status"></p>
+      <div class="page-brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="19"
+            height="19"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M6 9v7m3-9h6m-6 11h6m2-8 3-3-3-3z" />
+            <rect x="3" y="4" width="6" height="5" rx="1" />
+            <rect x="3" y="16" width="6" height="5" rx="1" />
+            <rect x="15" y="16" width="6" height="5" rx="1" />
+          </svg>
+        </span>
+        <h1>My GitHub Actions</h1>
+      </div>
       <button class="button add-repository" id="add-repository" type="button" hidden>
         Add repository
       </button>
     </header>
-    <ul class="notices" id="notices" aria-label="Notices" hidden></ul>
-    <div class="filters" id="filters" role="group" aria-label="Show lines by status" hidden></div>
-    <main>
-      <div class="empty" id="empty"></div>
-      <div class="repositories" id="repositories"></div>
-    </main>
+    <div class="workspace">
+      <aside class="filters" id="filters" aria-label="Run filters" hidden></aside>
+      <main>
+        <header class="activity-header">
+          <h2>Workflow activity</h2>
+          <p class="status" id="status"></p>
+        </header>
+        <details class="notice-disclosure" id="notice-disclosure" hidden>
+          <summary class="notice-summary">
+            <span id="notice-count"></span>
+            <span class="notice-preview" id="notice-preview"></span>
+          </summary>
+          <ul class="notices" id="notices" aria-label="Notices"></ul>
+        </details>
+        <div class="empty" id="empty"></div>
+        <div class="repositories" id="repositories"></div>
+      </main>
+    </div>
     <p class="visually-hidden" id="announcer" role="status"></p>
     <noscript><p class="empty">This page needs JavaScript to show the runs.</p></noscript>
   </body>

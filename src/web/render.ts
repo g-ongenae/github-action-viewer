@@ -69,6 +69,7 @@ interface LineParts {
   readonly ref: HTMLElement;
   readonly date: HTMLTimeElement;
   readonly title: HTMLElement;
+  readonly pr: HTMLElement;
   readonly prTitle: HTMLElement;
   readonly author: HTMLElement;
   readonly done: HTMLButtonElement;
@@ -90,6 +91,9 @@ interface LineContext {
 export class PageRenderer {
   readonly #document: Document;
   readonly #status: HTMLElement;
+  readonly #noticeDisclosure: HTMLElement;
+  readonly #noticeCount: HTMLElement;
+  readonly #noticePreview: HTMLElement;
   readonly #notices: HTMLElement;
   readonly #empty: HTMLElement;
   readonly #repositories: HTMLElement;
@@ -105,6 +109,9 @@ export class PageRenderer {
     this.#document = document;
     this.#options = options;
     this.#status = required(document, 'status');
+    this.#noticeDisclosure = required(document, 'notice-disclosure');
+    this.#noticeCount = required(document, 'notice-count');
+    this.#noticePreview = required(document, 'notice-preview');
     this.#notices = required(document, 'notices');
     this.#empty = required(document, 'empty');
     this.#repositories = required(document, 'repositories');
@@ -205,7 +212,23 @@ export class PageRenderer {
   }
 
   #renderNotices(notices: readonly Notice[]): void {
-    this.#notices.hidden = notices.length === 0;
+    this.#noticeDisclosure.hidden = notices.length === 0;
+    const warnings = notices.filter((notice) => notice.tone === 'warning');
+    const infoCount = notices.length - warnings.length;
+    this.#noticeDisclosure.classList.toggle('has-warning', warnings.length > 0);
+    setText(
+      this.#noticeCount,
+      [
+        warnings.length > 0 ? plural(warnings.length, 'warning') : '',
+        infoCount > 0 ? plural(infoCount, 'notice') : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    );
+    const leadWarning =
+      warnings.find(({ key }) => key === 'stale' || key === 'rate-limited') ?? warnings[0];
+    this.#noticePreview.hidden = leadWarning === undefined;
+    setText(this.#noticePreview, leadWarning?.title ?? '');
     reconcile(
       this.#notices,
       notices,
@@ -294,7 +317,7 @@ export class PageRenderer {
   #createRepository(): HTMLElement {
     const section = element('section', 'repository');
     const header = element('header', 'repository-header');
-    const heading = element('h2', 'repository-name');
+    const heading = element('h3', 'repository-name');
     heading.id = this.#id('repository');
     section.setAttribute('aria-labelledby', heading.id);
     const staleNote = element('p', 'repository-stale');
@@ -361,16 +384,25 @@ export class PageRenderer {
     const date = element('time', 'line-date');
     const text = element('span', 'line-text');
     const title = element('bdi', 'line-title');
+    const pr = element('span', 'line-pr');
+    const separator = element('span', 'line-pr-separator');
+    separator.setAttribute('aria-hidden', 'true');
+    separator.textContent = '·';
     const prTitle = element('bdi', 'line-pr-title');
     const author = element('bdi', 'line-author');
-    text.append(title, prTitle, author);
+    pr.append(separator, prTitle);
+    text.append(title, pr);
+    const note = element('p', 'line-note');
+    const content = element('div', 'line-content');
+    content.append(ref, text, note);
+    const metadata = element('div', 'line-metadata');
+    metadata.append(author, date);
     const done = element('button', 'line-done');
     done.type = 'button';
     const doneLabel = element('span', 'visually-hidden');
     doneLabel.textContent = 'Done';
     done.append(checkIcon(), doneLabel);
-    const note = element('p', 'line-note');
-    row.append(toggle, ref, date, text, done, note);
+    row.append(toggle, content, metadata, done);
 
     const panel = element('div', 'line-panel');
     panel.id = this.#id('runs');
@@ -390,6 +422,7 @@ export class PageRenderer {
       ref,
       date,
       title,
+      pr,
       prTitle,
       author,
       done,
@@ -479,7 +512,7 @@ export class PageRenderer {
     setText(parts.title, line.commit.title);
     setAttribute(parts.title, 'title', line.commit.title);
     const showPrTitle = pr !== null && pr.title !== line.commit.title;
-    parts.prTitle.hidden = !showPrTitle;
+    parts.pr.hidden = !showPrTitle;
     setText(parts.prTitle, showPrTitle ? pr.title : '');
     setAttribute(parts.prTitle, 'title', showPrTitle ? `Pull request: ${pr.title}` : null);
     const author = line.commit.authorName ?? pr?.author ?? 'unknown author';
