@@ -10,7 +10,7 @@ One section per repository, one line per branch or pull request: state, ref, dat
 and author. It updates by itself, and the tab title and icon say whether something is running or
 failed, so a pinned tab is enough.
 
-![The page in demo mode: repositories with running, failed, waiting and passed lines, one pull request expanded to its workflow runs, notices about a configuration problem and slowed-down polling, and the status filter's chips](docs/screenshot.png)
+![The page in demo mode with status filters, a compact notice above the activity list, and workflow runs grouped by repository](docs/screenshot.png)
 
 <sup>Demo mode (`pnpm demo`): every name on it is made up.</sup>
 
@@ -68,27 +68,26 @@ pull request or to the branch's runs; for a pull request, its title follows the 
 grey. Click the state (or press Enter on it) to list the line's workflow runs with their event,
 number, attempt and time, each linking to its run on GitHub; hover any date for the exact time.
 
-**Filtering by status**: the chips above the repositories (_Running_, _Failed_, _Waiting_,
-_Passed_, _Other_) each say how many lines have that status; press one or more to show only those
-lines, and **Show all** to see every line again. They count like the summary: a line running on
-an older commit while its newest commit failed is both _Running_ and _Failed_; _Passed_ is a
-newest commit that passed; _Other_ gathers the lines that are none of these (cancelled, skipped,
-neutral, stale, unknown). The choice is kept in the page's address (`?status=failed,waiting`), so a
+The **Run status** filters (_Running_, _Failed_, _Waiting_, _Passed_, _Other_) each show how many
+lines have that status. Press one or more to show matching lines, and **All statuses** to clear the
+status filters. A line running on an older commit while its newest commit failed counts as both
+_Running_ and _Failed_. _Passed_ counts lines whose newest commit passed. _Other_ gathers the
+remaining lines (cancelled, skipped, neutral, stale, unknown). The choice is kept in the page's address (`?status=failed,waiting`), so a
 reload or a bookmark keeps it; the summary, tab title and icon still describe every line (except
 those marked as done).
 
-**Marking a line as done**: the check mark at the end of a line (it shows when the pointer is on
-the line, or with Tab) hides the line, like _Mark as done_ on GitHub's notifications. The line
-comes back by itself as soon as something new happens on it: a new commit, a new or re-run
+The check mark at the end of a line marks it as **done** and hides it, like _Mark as done_ on
+GitHub's notifications. The line comes back by itself after a new commit, a new or re-run
 workflow (also on an older commit), or its newest commit's verdict changing (a running commit
 that finishes). Lines marked as done no longer count in the summary or the tab title and icon. The
-**Done** chip at the end of the row says how many there are; pressed, it puts them back among the
+**Include done** filter shows how many there are. Pressing it puts them back among the
 other lines, shaded, where the status chips count and filter them like any other line, and their
 check mark takes them back. The marks are kept in the browser (its local storage): they survive a
 reload and apply to every tab of that browser, but not to another browser or device.
 
-A repository the server could not refresh keeps its earlier lines, marked by a dashed rule and
-"may be out of date". The tab title repeats the summary, e.g. "2 running · 1 failed · My GitHub
+Expand the notice summary above the activity list to see all collection and configuration details.
+A repository the server could not refresh keeps its earlier lines with "May be out of date" in
+its header. The tab title repeats the summary, e.g. "2 running · 1 failed · My GitHub
 Actions", and the tab icon is green (all quiet), blue (running or waiting), red (failed) or grey
 (disconnected).
 

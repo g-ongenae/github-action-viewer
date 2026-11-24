@@ -354,7 +354,9 @@ describe('PageRenderer: notices and empty states', () => {
         }),
       }),
     );
-    expect($('#notices').hidden).toBe(false);
+    expect($('#notice-disclosure').hidden).toBe(false);
+    expect($('#notice-count').textContent).toBe('2 warnings');
+    expect($('#notice-preview').textContent).toContain('latest checks failed');
     expect(texts('.notice-title')).toEqual([
       'The configuration file has problems: the last valid configuration still applies.',
       'Showing data from 12 min ago: the latest checks failed.',
@@ -362,7 +364,7 @@ describe('PageRenderer: notices and empty states', () => {
     expect($('.notice-details.verbatim li').textContent).toBe('port: <b>bad</b>');
 
     render(payload([]));
-    expect($('#notices').hidden).toBe(true);
+    expect($('#notice-disclosure').hidden).toBe(true);
     expect($$('.notice')).toHaveLength(0);
   });
 
@@ -421,7 +423,7 @@ describe('PageRenderer: notices and empty states', () => {
     expect($$('.repository')).toHaveLength(0);
     expect($('.empty-title').textContent).toBe('No line matches the filter.');
     expect($('#empty p:last-child').textContent).toBe(
-      'Showing only Waiting, Other: 3 lines hidden. “Show all” shows them.',
+      'Showing only Waiting, Other: 3 lines hidden. “All statuses” shows them.',
     );
   });
 

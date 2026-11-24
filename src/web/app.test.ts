@@ -116,7 +116,7 @@ describe('App', () => {
     const refs = (): string[] =>
       [...document.querySelectorAll('.line-ref')].map((ref) => ref.textContent);
     const showAll = (): HTMLButtonElement | null =>
-      document.querySelector<HTMLButtonElement>('.filter-clear');
+      document.querySelector<HTMLButtonElement>('.filter-all');
     const busy = payload([
       repositoryView('o/r', [
         lineIn('in_progress'),
@@ -156,13 +156,13 @@ describe('App', () => {
 
     it('toggles statuses, keeps them in the address, and shows all again', () => {
       app.setPayload(busy);
-      expect(showAll()?.hidden).toBe(true);
+      expect(showAll()?.getAttribute('aria-pressed')).toBe('true');
 
       chip('Failed').click();
       expect(chip('Failed').getAttribute('aria-pressed')).toBe('true');
       expect(refs()).toEqual(['#1']);
       expect(location.search).toBe('?status=failed');
-      expect(showAll()?.hidden).toBe(false);
+      expect(showAll()?.getAttribute('aria-pressed')).toBe('false');
 
       chip('Running').click();
       expect(refs()).toEqual(['main', '#1']);
@@ -171,11 +171,12 @@ describe('App', () => {
       chip('Failed').click();
       expect(refs()).toEqual(['main']);
 
+      showAll()?.focus();
       showAll()?.click();
       expect(refs()).toEqual(['main', '#1', '#2']);
       expect(location.search).toBe('');
       expect(chip('Running').getAttribute('aria-pressed')).toBe('false');
-      expect(document.activeElement).toBe(chip('Running'));
+      expect(document.activeElement).toBe(showAll());
     });
 
     it('says what a change of the filter leaves on the page', () => {

@@ -212,7 +212,7 @@ export function filteredOutState(
     key: 'filtered-out',
     title: 'No line matches the filter.',
     paragraphs: [
-      [`Showing only ${shown}: ${plural(hidden, 'line')} hidden. “Show all” shows them.`],
+      [`Showing only ${shown}: ${plural(hidden, 'line')} hidden. “All statuses” shows them.`],
     ],
   };
 }
@@ -224,7 +224,7 @@ export function allDoneState(done: number): EmptyState {
     title: 'All done.',
     paragraphs: [
       [
-        `${plural(done, 'line')} marked as done. A line comes back by itself when something new happens on it; “Done” shows them.`,
+        `${plural(done, 'line')} marked as done. A line comes back by itself when something new happens on it. “Include done” shows them.`,
       ],
     ],
   };

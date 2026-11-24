@@ -1,6 +1,6 @@
-// The row of status chips above the repositories. Each chip toggles one status and says how many
+// The status filters beside the repositories. Each chip toggles one status and says how many
 // lines have it; with none pressed every line shows. The choice is kept in the page's address.
-// The “Done” chip at the end shows the lines marked as done, which are otherwise hidden.
+// “Include done” shows the lines marked as done, which are otherwise hidden.
 
 import { element, setAttribute, setText } from './dom.ts';
 import {
@@ -20,7 +20,7 @@ interface Chip {
 export class FilterBar {
   readonly #container: HTMLElement;
   readonly #chips = new Map<LineStatus, Chip>();
-  readonly #clear: HTMLButtonElement;
+  readonly #all: HTMLButtonElement;
   readonly #done: Chip;
   readonly #window: Window | null;
   readonly #onChange: () => void;
@@ -55,12 +55,16 @@ export class FilterBar {
       });
       this.#chips.set(status, { button, count });
     }
-    this.#clear = element('button', 'button button-quiet filter-clear');
-    this.#clear.type = 'button';
-    this.#clear.textContent = 'Show all';
-    this.#clear.addEventListener('click', () => {
-      this.#chips.get(LINE_STATUSES[0])?.button.focus();
-      this.#select(new Set());
+    const heading = element('h2', 'filter-heading');
+    heading.textContent = 'Run status';
+    const statuses = element('div', 'filter-statuses');
+    this.#all = element('button', 'filter-all');
+    this.#all.type = 'button';
+    this.#all.textContent = 'All statuses';
+    this.#all.addEventListener('click', () => {
+      if (this.#selected.size > 0) {
+        this.#select(new Set());
+      }
     });
     this.#done = doneChip();
     this.#done.button.addEventListener('click', () => {
@@ -68,11 +72,8 @@ export class FilterBar {
       this.#updateChips();
       this.#onChange();
     });
-    container.replaceChildren(
-      ...[...this.#chips.values()].map((chip) => chip.button),
-      this.#clear,
-      this.#done.button,
-    );
+    statuses.append(this.#all, ...[...this.#chips.values()].map((chip) => chip.button));
+    container.replaceChildren(heading, statuses, this.#done.button);
     this.#updateChips();
   }
 
@@ -88,7 +89,7 @@ export class FilterBar {
 
   /**
    * Shows the number of lines of each status, and of lines marked as done; null hides the chips
-   * (no lines to filter yet). The “Done” chip only shows while a line is done.
+   * (no lines to filter yet). “Include done” only shows while a line is done.
    */
   update(counts: Readonly<Record<LineStatus, number>> | null, done: number): void {
     this.#container.hidden = counts === null;
@@ -113,7 +114,7 @@ export class FilterBar {
     }
   }
 
-  /** Focuses the “Done” chip, where a line marked as done went; does nothing while it is hidden. */
+  /** Focuses “Include done” after the last visible line is marked as done. */
   focusDone(): void {
     if (!this.#container.hidden && !this.#done.button.hidden) {
       this.#done.button.focus({ preventScroll: true });
@@ -135,7 +136,7 @@ export class FilterBar {
     for (const [status, chip] of this.#chips) {
       setAttribute(chip.button, 'aria-pressed', String(this.#selected.has(status)));
     }
-    this.#clear.hidden = this.#selected.size === 0;
+    setAttribute(this.#all, 'aria-pressed', String(this.#selected.size === 0));
     setAttribute(this.#done.button, 'aria-pressed', String(this.#showDone));
   }
 }
@@ -146,7 +147,7 @@ function doneChip(): Chip {
   button.title =
     'Also show the lines marked as done; each comes back by itself when something new happens on it';
   const label = element('span', 'filter-label');
-  label.textContent = 'Done';
+  label.textContent = 'Include done';
   const count = element('span', 'filter-count');
   button.append(checkIcon(), label, count);
   return { button, count };
