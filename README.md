@@ -73,8 +73,15 @@ lines have that status. Press one or more to show matching lines, and **All stat
 status filters. A line running on an older commit while its newest commit failed counts as both
 _Running_ and _Failed_. _Passed_ counts lines whose newest commit passed. _Other_ gathers the
 remaining lines (cancelled, skipped, neutral, stale, unknown). The choice is kept in the page's address (`?status=failed,waiting`), so a
-reload or a bookmark keeps it; the summary, tab title and icon still describe every line (except
-those marked as done).
+reload or a bookmark keeps it. The summary, tab title and icon describe all lines in visible
+repositories except those marked as done.
+
+The **Repositories** list shows the total workflow runs loaded for each repository across all
+statuses, including runs on lines marked as done. Repositories are listed by name so the rows
+stay in place as counts change. Click a repository to hide or show its activity. Hidden
+repositories stay in the list with their counts and a crossed-out eye. The browser remembers
+which repositories are hidden across reloads and tabs, including when a repository leaves the
+feed and later returns.
 
 The check mark at the end of a line marks it as **done** and hides it, like _Mark as done_ on
 GitHub's notifications. The line comes back by itself after a new commit, a new or re-run

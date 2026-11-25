@@ -29,8 +29,9 @@ export class FilterBar {
 
   constructor(document: Document, onChange: () => void) {
     const container = document.getElementById('filters');
-    if (container === null) {
-      throw new Error('The page has no #filters element.');
+    const statusFilters = document.getElementById('status-filters');
+    if (container === null || statusFilters === null) {
+      throw new Error('The page has no run filter elements.');
     }
     this.#container = container;
     this.#window = document.defaultView;
@@ -73,7 +74,7 @@ export class FilterBar {
       this.#onChange();
     });
     statuses.append(this.#all, ...[...this.#chips.values()].map((chip) => chip.button));
-    container.replaceChildren(heading, statuses, this.#done.button);
+    statusFilters.replaceChildren(heading, statuses, this.#done.button);
     this.#updateChips();
   }
 

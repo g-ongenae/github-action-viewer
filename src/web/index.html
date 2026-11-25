@@ -36,7 +36,13 @@
       </button>
     </header>
     <div class="workspace">
-      <aside class="filters" id="filters" aria-label="Run filters" hidden></aside>
+      <aside class="filters" id="filters" aria-label="Activity filters" hidden>
+        <div id="status-filters"></div>
+        <section class="repository-filter" aria-labelledby="repository-filter-heading">
+          <h2 class="filter-heading" id="repository-filter-heading">Repositories</h2>
+          <ul class="repository-filter-list" id="repository-filter-list"></ul>
+        </section>
+      </aside>
       <main>
         <header class="activity-header">
           <h2>Workflow activity</h2>

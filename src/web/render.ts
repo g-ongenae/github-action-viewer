@@ -36,6 +36,8 @@ import { branchRunsUrl } from './urls.ts';
 export interface ViewState {
   /** The latest payload, with the latest heartbeat's fields applied; null before the first. */
   readonly payload: PagePayload | null;
+  /** Repositories enabled in the sidebar, before status and done filters. */
+  readonly repositories: readonly RepositoryView[];
   readonly connection: ConnectionState;
   /** Current time, milliseconds since the epoch. */
   readonly now: number;
@@ -124,7 +126,7 @@ export class PageRenderer {
     const focused = this.#document.activeElement;
     const selection = saveSelection(this.#document);
     const snapshot = view.payload?.snapshot ?? null;
-    const repositories = snapshot?.repositories ?? [];
+    const { repositories } = view;
     const open = withoutDone(repositories, view.done);
     const summary = summarise(open);
 
@@ -136,9 +138,17 @@ export class PageRenderer {
       emptyState(view.payload, view.connection) ??
         (shown.length > 0
           ? null
-          : lineCount(visible) === 0
-            ? allDoneState(view.done.size)
-            : filteredOutState(visible, view.filter)),
+          : repositories.length === 0
+            ? {
+                key: 'repositories-hidden',
+                title: 'All repositories are hidden.',
+                paragraphs: [
+                  ['Select a repository in the Repositories list to show its activity.'],
+                ],
+              }
+            : lineCount(visible) === 0
+              ? allDoneState(view.done.size)
+              : filteredOutState(visible, view.filter)),
     );
     this.#renderRepositories(
       shown,

@@ -159,7 +159,7 @@ h1 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 12.5rem minmax(0, 1fr);
+  grid-template-columns: clamp(12.5rem, 20vw, 16rem) minmax(0, 1fr);
   align-items: start;
   gap: clamp(1rem, 2vw, 2rem);
   max-width: 100rem;
@@ -419,6 +419,62 @@ h1 {
   margin-top: 0.5rem;
 }
 
+.repository-filter {
+  margin-top: 1rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--rule);
+}
+
+.repository-filter-list {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repository-visibility {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  min-height: 2.125rem;
+  padding: 0.3125rem 0.625rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repository-visibility:hover {
+  background: var(--surface-subtle);
+}
+
+.repository-visibility:hover .filter-count {
+  background: var(--surface);
+}
+
+.repository-visibility[aria-pressed='false'] {
+  color: var(--muted);
+}
+
+.repository-filter-name {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.repository-visibility :is(.visibility-icon, .filter-count) {
+  flex-shrink: 0;
+}
+
+.repository-visibility[aria-pressed='true'] .visibility-slash {
+  display: none;
+}
+
 @media (max-width: 48rem) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
@@ -457,6 +513,13 @@ h1 {
   .filter-all[aria-pressed='true'] {
     border-color: var(--accent);
     box-shadow: none;
+  }
+
+  .repository-filter-list {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    max-height: 14rem;
+    overflow: auto;
+    padding: 0.25rem;
   }
 }
 
