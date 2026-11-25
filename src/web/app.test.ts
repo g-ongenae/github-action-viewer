@@ -9,6 +9,7 @@ import {
   heartbeat,
   iso,
   lineIn,
+  lineView,
   MemoryStorage,
   NOW,
   PAGE_SKELETON,
@@ -216,6 +217,123 @@ describe('App', () => {
       reloaded.setPayload(busy);
       expect(refs()).toEqual(['#2']);
       expect(chip('Passed').getAttribute('aria-pressed')).toBe('true');
+    });
+  });
+
+  describe('repository visibility', () => {
+    afterEach(() => {
+      history.replaceState(null, '', '/');
+    });
+
+    const mixed = payload([
+      repositoryView('o/main', [
+        lineView({ runs: [runView({ id: 1, state: 'failure' }), runView({ id: 2 })] }),
+        prLine(1, { runs: [runView({ id: 2 }), runView({ id: 3, state: 'queued' })] }),
+      ]),
+      repositoryView('o/other', [lineIn('success')]),
+    ]);
+    const repoButton = (name: string): HTMLButtonElement => {
+      const button = document.querySelector<HTMLButtonElement>(
+        `[data-key="${name}"] > .repository-visibility`,
+      );
+      if (button === null) {
+        throw new Error(`No button for ${name}`);
+      }
+      return button;
+    };
+    const groups = (): string[] =>
+      [...document.querySelectorAll('.repository-name')].map((heading) => heading.textContent);
+
+    it('counts unique runs across statuses and keeps counts when activity is hidden', () => {
+      app.setPayload(mixed);
+      const main = repoButton('o/main');
+      expect(main.querySelector('.filter-count')?.textContent).toBe('3');
+      expect(repoButton('o/other').querySelector('.filter-count')?.textContent).toBe('1');
+
+      document.querySelector<HTMLButtonElement>('.line-done')?.click();
+      document.querySelector<HTMLButtonElement>('.filter.tone-success')?.click();
+      expect(main.querySelector('.filter-count')?.textContent).toBe('3');
+
+      main.focus();
+      main.click();
+      expect(main.getAttribute('aria-pressed')).toBe('false');
+      expect(text('#announcer')).toBe('o/main hidden.');
+      expect(document.activeElement).toBe(main);
+      expect(groups()).toEqual(['o/other']);
+
+      repoButton('o/other').click();
+      expect(groups()).toEqual([]);
+      expect(text('.empty-title')).toBe('All repositories are hidden.');
+      expect(main.querySelector('.filter-count')?.textContent).toBe('3');
+
+      main.click();
+      expect(main.getAttribute('aria-pressed')).toBe('true');
+      expect(text('#announcer')).toBe('o/main shown.');
+      document.querySelector<HTMLButtonElement>('.filter-all')?.click();
+      expect(groups()).toEqual(['o/main']);
+    });
+
+    it('remembers hidden repositories across reloads and temporary absence from the feed', () => {
+      app.setPayload(mixed);
+      repoButton('o/main').click();
+      app.setPayload(payload([]));
+      app.setPayload(mixed);
+      expect(groups()).toEqual(['o/other']);
+
+      document.body.innerHTML = PAGE_SKELETON;
+      const reloaded = new App(document, () => now, api, storage);
+      reloaded.setPayload(mixed);
+      expect(groups()).toEqual(['o/other']);
+      expect(repoButton('o/main').getAttribute('aria-pressed')).toBe('false');
+      repoButton('o/main').click();
+      expect(groups()).toEqual(['o/main', 'o/other']);
+    });
+
+    it('applies changes from another tab and announces activity in visible repositories', () => {
+      app.setPayload(
+        payload([
+          repositoryView('o/main', [lineIn('in_progress')]),
+          repositoryView('o/other', [lineIn('in_progress')]),
+        ]),
+      );
+      const key = 'github-action-viewer.hidden-repositories';
+      storage.setItem(key, '["o/main"]');
+      window.dispatchEvent(new StorageEvent('storage', { key }));
+      expect(groups()).toEqual(['o/other']);
+      expect(repoButton('o/main').getAttribute('aria-pressed')).toBe('false');
+
+      app.setPayload(
+        payload([
+          repositoryView('o/main', [lineIn('failure')]),
+          repositoryView('o/other', [lineIn('failure')]),
+        ]),
+      );
+      expect(text('#announcer')).toBe('o/other main failed.');
+
+      storage.clear();
+      window.dispatchEvent(new StorageEvent('storage', { key: null }));
+      expect(groups()).toEqual(['o/main', 'o/other']);
+    });
+
+    it('keeps sidebar order and focus as run counts and activity order change', () => {
+      app.setPayload(mixed);
+      const other = repoButton('o/other');
+      other.focus();
+
+      app.setPayload(
+        payload([
+          repositoryView('o/other', [
+            lineView({ runs: [1, 2, 3, 4].map((id) => runView({ id })) }),
+          ]),
+          repositoryView('o/main', [lineIn('success')]),
+        ]),
+      );
+      expect(groups()).toEqual(['o/other', 'o/main']);
+      expect(
+        [...document.querySelectorAll('.repository-filter-name')].map((label) => label.textContent),
+      ).toEqual(['o/main', 'o/other']);
+      expect(other.querySelector('.filter-count')?.textContent).toBe('4');
+      expect(document.activeElement).toBe(other);
     });
   });
 

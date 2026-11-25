@@ -10,13 +10,17 @@ import { FilterBar } from './filter-bar.ts';
 import { countStatuses, describeFilter } from './filter.ts';
 import { PageRenderer } from './render.ts';
 import { RepositoryDialog } from './repository-dialog.ts';
+import { RepositoryFilter } from './repository-filter.ts';
 import { describeChanges } from './summary.ts';
 import { createWatchListApi, type WatchListApi } from './watch-list-api.ts';
+
+const NO_REPOSITORIES: readonly RepositoryView[] = [];
 
 export class App {
   readonly #renderer: PageRenderer;
   readonly #dialog: RepositoryDialog;
   readonly #filterBar: FilterBar;
+  readonly #repositoryFilter: RepositoryFilter;
   readonly #done: DoneLines;
   readonly #document: Document;
   readonly #now: () => number;
@@ -44,16 +48,29 @@ export class App {
       throw new Error('The page has no #add-repository button.');
     }
     this.#dialog = new RepositoryDialog(document, opener, api);
+    this.#repositoryFilter = new RepositoryFilter(document, storage, (name, visible) => {
+      this.render();
+      this.#renderer.announce(`${name} ${visible ? 'shown' : 'hidden'}.`);
+    });
     this.#filterBar = new FilterBar(document, () => {
       this.render();
       this.#renderer.announce(
-        describeFilter(this.#visible().repositories, this.#filterBar.selected),
+        describeFilter(
+          this.#statusScope(this.#repositoryFilter.visible(this.#repositories)).repositories,
+          this.#filterBar.selected,
+        ),
       );
     });
-    // Another tab marked a line as done, or not done.
     document.defaultView?.addEventListener('storage', (event) => {
-      if (this.#done.concerns(event)) {
+      const doneChanged = this.#done.concerns(event);
+      const repositoriesChanged = this.#repositoryFilter.concerns(event);
+      if (doneChanged) {
         this.#done.reload();
+      }
+      if (repositoriesChanged) {
+        this.#repositoryFilter.reload();
+      }
+      if (doneChanged || repositoriesChanged) {
         this.render();
       }
     });
@@ -74,7 +91,12 @@ export class App {
       config: payload.status.config,
       repositories: payload.snapshot?.repositories ?? [],
     });
-    this.#renderer.announce(describeChanges(previous, payload.snapshot));
+    const scope = (snapshot: PagePayload['snapshot']): PagePayload['snapshot'] =>
+      snapshot && {
+        ...snapshot,
+        repositories: this.#repositoryFilter.visible(snapshot.repositories),
+      };
+    this.#renderer.announce(describeChanges(scope(previous), scope(payload.snapshot)));
   }
 
   /**
@@ -118,17 +140,28 @@ export class App {
   /** Re-renders with the current time, so that relative times keep ticking. */
   render(): void {
     const focused = this.#document.activeElement;
-    const { repositories, done } = this.#visible();
-    const empty = (this.#payload?.snapshot?.repositories.length ?? 0) === 0;
-    this.#filterBar.update(empty ? null : countStatuses(repositories), done.size);
+    const all = this.#repositories;
+    const visible = this.#repositoryFilter.visible(all);
+    const { repositories, done } = this.#statusScope(visible);
+    this.#filterBar.update(all.length === 0 ? null : countStatuses(repositories), done.size);
     this.#renderer.render({
       payload: this.#payload,
+      repositories: visible,
       connection: this.#connection,
       now: this.#now(),
       filter: this.#filterBar.selected,
       done,
       showDone: this.#filterBar.showDone,
     });
+    const beforeSidebarUpdate = this.#document.activeElement;
+    this.#repositoryFilter.update(all);
+    if (
+      beforeSidebarUpdate instanceof HTMLElement &&
+      beforeSidebarUpdate.isConnected &&
+      beforeSidebarUpdate !== this.#document.activeElement
+    ) {
+      beforeSidebarUpdate.focus({ preventScroll: true });
+    }
     // A line that stopped matching or was marked as done in another tab took the focus with it,
     // or “Include done” went away: keep the reader near the lines.
     if (
@@ -139,9 +172,15 @@ export class App {
     }
   }
 
+  get #repositories(): readonly RepositoryView[] {
+    return this.#payload?.snapshot?.repositories ?? NO_REPOSITORIES;
+  }
+
   /** The lines the status filter applies to, and the ids of the lines marked as done. */
-  #visible(): { repositories: readonly RepositoryView[]; done: ReadonlySet<string> } {
-    const all = this.#payload?.snapshot?.repositories ?? [];
+  #statusScope(all: readonly RepositoryView[]): {
+    repositories: readonly RepositoryView[];
+    done: ReadonlySet<string>;
+  } {
     const done = this.#done.doneIn(all);
     return { repositories: this.#filterBar.showDone ? all : withoutDone(all, done), done };
   }

@@ -33,7 +33,14 @@ function render(
     showDone: false,
   },
 ): void {
-  renderer.render({ payload: shown, connection, now, filter, ...done });
+  renderer.render({
+    payload: shown,
+    repositories: shown?.snapshot?.repositories ?? [],
+    connection,
+    now,
+    filter,
+    ...done,
+  });
 }
 
 const $ = (selector: string): HTMLElement => {

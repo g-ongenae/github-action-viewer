@@ -98,3 +98,25 @@ export function checkIcon(): SVGSVGElement {
   svg.append(glyph);
   return svg;
 }
+
+/** An eye with a slash that CSS shows when the repository is hidden. */
+export function visibilityIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '16');
+  svg.setAttribute('height', '16');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('class', 'icon visibility-icon');
+  const eye = document.createElementNS(SVG, 'path');
+  eye.setAttribute(
+    'd',
+    'M1 8s2.5-4 7-4 7 4 7 4-2.5 4-7 4-7-4-7-4z M9.5 8a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0z',
+  );
+  eye.setAttribute('class', 'icon-glyph');
+  const slash = document.createElementNS(SVG, 'path');
+  slash.setAttribute('d', 'M2 2l12 12');
+  slash.setAttribute('class', 'icon-glyph visibility-slash');
+  svg.append(eye, slash);
+  return svg;
+}

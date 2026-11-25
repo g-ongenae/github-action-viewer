@@ -170,7 +170,10 @@ export const PAGE_SKELETON = `
     <summary><span id="notice-count"></span><span id="notice-preview"></span></summary>
     <ul id="notices"></ul>
   </details>
-  <div id="filters" hidden></div>
+  <aside id="filters" hidden>
+    <div id="status-filters"></div>
+    <ul id="repository-filter-list"></ul>
+  </aside>
   <main><div id="empty"></div><div id="repositories"></div></main>
   <p id="announcer" role="status"></p>
 `;
