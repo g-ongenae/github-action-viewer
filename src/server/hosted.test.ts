@@ -9,6 +9,8 @@ const origin = new URL('https://viewer.example');
 const tokensUsed: string[] = [];
 const exchanges: URLSearchParams[] = [];
 let denyAlice = false;
+let nextCode = 0;
+const redeemedCodes = new Set<string>();
 let hosted: ReturnType<typeof createHostedServer>;
 let port: number;
 
@@ -16,6 +18,8 @@ beforeEach(async () => {
   tokensUsed.length = 0;
   exchanges.length = 0;
   denyAlice = false;
+  nextCode = 0;
+  redeemedCodes.clear();
   hosted = createHostedServer({
     publicOrigin: origin,
     staticRoot: fileURLToPath(new URL('../web/', import.meta.url)),
@@ -29,7 +33,14 @@ beforeEach(async () => {
         const body = new URLSearchParams(await req.text());
         exchanges.push(body);
         const refresh = body.get('refresh_token');
-        const name = refresh ? refresh.split('-')[1] : body.get('code');
+        const code = body.get('code');
+        if (code) {
+          if (redeemedCodes.has(code)) {
+            return Response.json({ error: 'bad_verification_code' });
+          }
+          redeemedCodes.add(code);
+        }
+        const name = refresh ? refresh.split('-')[1] : code?.split('-')[0];
         return Response.json({
           access_token: refresh ? `rotated-${name ?? ''}` : `access-${name ?? ''}`,
           refresh_token: `refresh-${name ?? ''}`,
@@ -117,9 +128,13 @@ async function login(user: string, existing?: { cookie: string }) {
   expect(start.status).toBe(303);
   const authorization = new URL(start.headers.location ?? '');
   const state = authorization.searchParams.get('state') ?? '';
-  const path = `/auth/callback?state=${state}&code=${user}`;
+  const code = `${user}-${String(nextCode++)}`;
+  const path = `/auth/callback?state=${state}&code=${code}`;
   const pendingCookie = cookie(start.headers['set-cookie']?.[0]);
   expect((await read(path)).status).toBe(400);
+  const replacement = pendingCookie.endsWith('a') ? 'b' : 'a';
+  const tamperedCookie = pendingCookie.slice(0, -1) + replacement;
+  expect((await read(path, { cookie: tamperedCookie })).status).toBe(400);
   const result = await read(path, {
     cookie: existing ? `${pendingCookie}; ${existing.cookie}` : pendingCookie,
     'Sec-Fetch-Site': 'cross-site',
@@ -128,8 +143,9 @@ async function login(user: string, existing?: { cookie: string }) {
   });
   expect(result.status).toBe(303);
   expect(result.headers.location).toBe('/dashboard');
-  expect((await read(path, { cookie: pendingCookie })).status).toBe(400);
-  const tokenExchange = exchanges.find((exchange) => exchange.get('code') === user);
+  // GitHub rejects the already-redeemed code even if the old cookie is replayed.
+  expect((await read(path, { cookie: pendingCookie })).status).toBe(502);
+  const tokenExchange = exchanges.find((exchange) => exchange.get('code') === code);
   const challenge = createHash('sha256')
     .update(tokenExchange?.get('code_verifier') ?? '')
     .digest('base64url');
@@ -205,5 +221,33 @@ describe('hosted viewer', () => {
     const bobOrigin = { ...bob, Origin: origin.origin };
     expect((await read(`/auth/logout?${stalePage}`, bobOrigin, 'POST')).status).toBe(401);
     expect((await read('/auth/session', bob)).status).toBe(200);
+  });
+  it('keeps accepting sign-in starts when prior attempts were abandoned', async () => {
+    for (let attempt = 0; attempt < 129; attempt += 1) {
+      expect((await read('/auth/login')).status).toBe(303);
+    }
+    const alice = await login('alice');
+    expect((await read('/auth/session', alice)).status).toBe(200);
+  });
+
+  it('replaces the least recently used session when an account opens a fifth session', async () => {
+    const oldest = await login('alice');
+    const second = await login('alice');
+    await login('alice');
+    await login('alice');
+    const newest = await login('alice');
+    expect((await read('/auth/session', oldest)).status).toBe(401);
+    expect((await read('/auth/session', second)).status).toBe(200);
+    expect((await read('/auth/session', newest)).status).toBe(200);
+  });
+  it('expires a session after 30 minutes without a request or open stream', async () => {
+    const alice = await login('alice');
+    const time = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31 * 60_000);
+    try {
+      expect((await read('/auth/session', alice)).status).toBe(401);
+    } finally {
+      time.mockRestore();
+    }
+    expect((await read('/auth/session', alice)).status).toBe(401);
   });
 });

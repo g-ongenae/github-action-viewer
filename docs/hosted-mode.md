@@ -11,7 +11,7 @@ work. Different sessions have separate snapshots, watch lists, caches and event 
    point and demo on the existing single-source setup. Test isolation with two
    simultaneous streams and revocation with a stream open.
 2. Add a hosted entry point with GitHub authorization-code exchange, PKCE and
-   one-time state, opaque sessions, token rotation, bounded per-session pollers,
+   short-lived signed state, opaque sessions, token rotation, bounded per-session pollers,
    and sign-in and sign-out controls. Preserve the local collector's behavior and
    apply a shorter, permission-aware snapshot policy in hosted mode. Document setup
    and test with a simulated GitHub API.
@@ -19,11 +19,17 @@ work. Different sessions have separate snapshots, watch lists, caches and event 
 ## Deployment and acceptance
 
 Run a single Node service on loopback behind an HTTPS proxy that forwards server-sent
-events without buffering. Register a GitHub App with Actions and Pull requests
+events without buffering. The proxy must be able to reach the service's loopback
+interface, so run it on the same host and in the same network namespace. Use one
+service instance per public origin. Register a GitHub App with Actions and Pull requests
 read access, Metadata read access, and expiring user tokens. Organization approval
 may be needed to install the app on private repositories. The browser only receives
 a session cookie. The initial deployment keeps sessions and watch lists in memory,
-so a restart requires signing in again and recreating watch lists.
+so signing in on another device starts a new watch list. A restart or redeploy
+signs everyone out and clears all watch lists. Sessions expire after 30 minutes
+without a stream or request, or after 12 hours at most. Opening a fifth session
+for the same GitHub account replaces an older one. At the 32-session instance
+limit, a new sign-in can replace an inactive session.
 
 Before public deployment, verify real GitHub authorization and discovery with two
 accounts that have different private repository access. Check public repositories,
@@ -37,7 +43,8 @@ browser-side preferences.
    `https://viewer.example.com/auth/callback`, expiring user access tokens, and the
    permissions listed above. Allow installations by other accounts if the service
    is for visitors outside the App owner's account. Sign-in and repository
-   installation are separate steps.
+   installation are separate steps. The hosted service needs an expiring user
+   token and its accompanying refresh token to complete sign-in.
 2. Set `VIEWER_PUBLIC_ORIGIN=https://viewer.example.com`, `GITHUB_APP_CLIENT_ID`,
    `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` (the name in the App's GitHub
    URL). Store the secret in the host's secret configuration. Start with
@@ -47,7 +54,8 @@ browser-side preferences.
    `Host` header (including any non-default port). Bypass response caching for
    `/dashboard`, `/auth/*`, and `/api/*`. Forward `/api/events` unbuffered with
    an idle timeout above the 15-second heartbeat. Keep OAuth callback query
-   strings, cookies, and authorization headers out of proxy logs.
+   strings, cookies, and authorization headers out of proxy logs. Rate-limit
+   `/auth/login` and `/auth/callback` at the proxy for a public deployment.
 
 If a private repository is missing, use **Connect repositories** to install or
 configure the App for that repository, then reopen the dashboard. The token can

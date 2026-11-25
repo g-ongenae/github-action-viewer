@@ -16,6 +16,7 @@ import { ConfigWatchListEditor } from './watch-list-editor.ts';
 const IDLE_MS = 2 * 60_000;
 const SNAPSHOT_TTL_MS = 2 * 60_000;
 const REFRESH_MARGIN_MS = 60_000;
+const REFRESH_RETRY_MS = 30_000;
 const MAX_WATCHED_REPOSITORIES = 50;
 
 export class HostedSession {
@@ -26,6 +27,9 @@ export class HostedSession {
   readonly expiresAt: number;
   #credential: UserCredential;
   #refresh: Promise<string> | null = null;
+  #refreshRetryAt = 0;
+  #activities = 0;
+  #lastActivity = Date.now();
   #runtime: { context: ViewerContext; close: () => Promise<void> } | null = null;
   #config: Config = { ...DEFAULT_CONFIG, pollIntervalSeconds: 30 };
 
@@ -41,6 +45,18 @@ export class HostedSession {
     this.#authorization = authorization;
     this.#fetch = fetch;
     this.#invalidate = invalidate;
+  }
+
+  get inUse(): boolean {
+    return this.#activities > 0;
+  }
+
+  get lastActivity(): number {
+    return this.#lastActivity;
+  }
+
+  touch(): void {
+    this.#lastActivity = Date.now();
   }
 
   context(): ViewerContext {
@@ -59,6 +75,12 @@ export class HostedSession {
     if (Date.now() + REFRESH_MARGIN_MS < this.#credential.expiresAt) {
       return Promise.resolve(this.#credential.accessToken);
     }
+    if (Date.now() < this.#refreshRetryAt) {
+      if (Date.now() < this.#credential.expiresAt) {
+        return Promise.resolve(this.#credential.accessToken);
+      }
+      throw new Error('GitHub authorization is temporarily unavailable.');
+    }
     this.#refresh ??= this.#rotate().finally(() => {
       this.#refresh = null;
     });
@@ -74,6 +96,8 @@ export class HostedSession {
     } catch (error) {
       if (error instanceof GitHubAuthorizationError) {
         this.#invalidate();
+      } else {
+        this.#refreshRetryAt = Date.now() + REFRESH_RETRY_MS;
       }
       throw error;
     }
@@ -161,7 +185,6 @@ export class HostedSession {
       },
     });
 
-    let streams = 0;
     let idle: ReturnType<typeof setTimeout> | undefined;
     const close = async (): Promise<void> => {
       lifetime.abort();
@@ -178,21 +201,40 @@ export class HostedSession {
     };
     scheduleIdle();
 
+    const beginActivity = (): (() => void) => {
+      this.#activities += 1;
+      this.touch();
+      clearTimeout(idle);
+      return () => {
+        this.#activities -= 1;
+        this.touch();
+        if (!this.inUse && !lifetime.signal.aborted) {
+          scheduleIdle();
+        }
+      };
+    };
+    const withActivity = async <T>(operation: () => Promise<T>): Promise<T> => {
+      const end = beginActivity();
+      try {
+        return await operation();
+      } finally {
+        end();
+      }
+    };
+
     return {
       context: {
         source: store,
-        watchList,
+        watchList: {
+          catalogue: () => withActivity(() => watchList.catalogue()),
+          add: (repository) => withActivity(() => watchList.add(repository)),
+          remove: (repository) => withActivity(() => watchList.remove(repository)),
+        },
         signal: lifetime.signal,
         onStreamOpen: () => {
-          streams += 1;
-          clearTimeout(idle);
+          const end = beginActivity();
           poller.start();
-          return () => {
-            streams -= 1;
-            if (streams === 0 && !lifetime.signal.aborted) {
-              scheduleIdle();
-            }
-          };
+          return end;
         },
       },
       close,

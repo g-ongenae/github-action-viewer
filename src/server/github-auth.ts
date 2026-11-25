@@ -21,6 +21,8 @@ export class GitHubAuthorizationError extends Error {
   }
 }
 
+export class NonExpiringGitHubTokenError extends GitHubAuthorizationError {}
+
 export function authorizationUrl(app: GitHubApp, state: string, challenge: string): string {
   const url = new URL(AUTHORIZE);
   url.search = new URLSearchParams({
@@ -88,6 +90,9 @@ export class GitHubAuthorization {
     const accessToken = 'access_token' in value ? value.access_token : null;
     const refreshToken = 'refresh_token' in value ? value.refresh_token : null;
     const expiresIn = 'expires_in' in value ? value.expires_in : null;
+    if (typeof accessToken === 'string' && refreshToken === null && expiresIn === null) {
+      throw new NonExpiringGitHubTokenError();
+    }
     if (
       typeof accessToken !== 'string' ||
       !isWellFormedToken(accessToken) ||
