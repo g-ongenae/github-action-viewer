@@ -49,6 +49,11 @@ export interface ClientStats {
 
 export interface GitHubClientOptions {
   readonly token: string;
+  /** Hosted credentials may rotate. The cache must belong to the same authorization. */
+  readonly getToken?: () => Promise<string>;
+  readonly onUnauthorized?: (token: string) => void;
+  /** Lifetime of this client, in addition to individual request cancellation. */
+  readonly signal?: AbortSignal;
   /** Defaults to the global `fetch`; tests inject a fake. */
   readonly fetch?: typeof globalThis.fetch;
   readonly userAgent?: string;
@@ -114,7 +119,7 @@ interface ParsedResponse<T> {
  *   {@link UnexpectedPayloadError}.
  */
 export class GitHubClient {
-  readonly #token: string;
+  readonly #options: GitHubClientOptions;
   readonly #fetch: typeof globalThis.fetch;
   readonly #userAgent: string;
   readonly #timeoutMs: number;
@@ -129,7 +134,7 @@ export class GitHubClient {
     if (!isWellFormedToken(options.token)) {
       throw new MalformedTokenError();
     }
-    this.#token = options.token;
+    this.#options = options;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#userAgent = options.userAgent ?? 'github-action-viewer';
     this.#timeoutMs = options.timeoutMs ?? 15_000;
@@ -236,10 +241,21 @@ export class GitHubClient {
       throw new TypeError(`Refusing to send the token outside ${API_ORIGIN}`);
     }
     options.gate?.();
-    const { signal } = options;
+    const lifetime = this.#options.signal;
+    const signal =
+      lifetime && options.signal
+        ? AbortSignal.any([lifetime, options.signal])
+        : (lifetime ?? options.signal);
+    signal?.throwIfAborted();
+    let token = this.#options.token;
+    if (this.#options.getToken) {
+      token = await this.#options.getToken();
+      signal?.throwIfAborted();
+      options.gate?.();
+    }
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${this.#token}`,
+      Authorization: `Bearer ${token}`,
       'User-Agent': this.#userAgent,
       'X-GitHub-Api-Version': API_VERSION,
     };
@@ -258,6 +274,9 @@ export class GitHubClient {
         redirect: 'manual',
       });
       this.#recordRateLimit(response.headers);
+      if (response.status === 401) {
+        this.#options.onUnauthorized?.(token);
+      }
       return { response, text: await response.text() };
     } catch (error) {
       if (signal?.aborted) {

@@ -30,3 +30,25 @@ accounts that have different private repository access. Check public repositorie
 organization installations, token expiry, logout across tabs, and repository access
 removed during a live session. Account changes must clear the dashboard and its
 browser-side preferences.
+
+## Configure the hosted service
+
+1. Register a GitHub App with the callback URL
+   `https://viewer.example.com/auth/callback`, expiring user access tokens, and the
+   permissions listed above. Allow installations by other accounts if the service
+   is for visitors outside the App owner's account. Sign-in and repository
+   installation are separate steps.
+2. Set `VIEWER_PUBLIC_ORIGIN=https://viewer.example.com`, `GITHUB_APP_CLIENT_ID`,
+   `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` (the name in the App's GitHub
+   URL). Store the secret in the host's secret configuration. Start with
+   `pnpm start:hosted`. The default loopback port is 4680 and can be set with
+   `PORT`.
+3. Proxy the public HTTPS origin to the Node service, preserving the public
+   `Host` header (including any non-default port). Bypass response caching for
+   `/dashboard`, `/auth/*`, and `/api/*`. Forward `/api/events` unbuffered with
+   an idle timeout above the 15-second heartbeat. Keep OAuth callback query
+   strings, cookies, and authorization headers out of proxy logs.
+
+If a private repository is missing, use **Connect repositories** to install or
+configure the App for that repository, then reopen the dashboard. The token can
+read private repositories only when both the visitor and the App have access.
