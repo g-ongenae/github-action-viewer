@@ -184,10 +184,7 @@ export function createHostedServer(options: HostedOptions): {
       return;
     }
     if (exchanging >= MAX_EXCHANGES) {
-      sendText(response, 503, 'Sign-in is busy. Try again later.', {
-        'Set-Cookie': clearState,
-        'Retry-After': '60',
-      });
+      sendText(response, 503, 'Sign-in is busy. Try again later.', { 'Retry-After': '60' });
       return;
     }
 
