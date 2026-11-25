@@ -1265,3 +1265,20 @@ main {
 .maintained-name a:hover {
   text-decoration: underline;
 }
+
+.account-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.account-controls[hidden] {
+  display: none;
+}
+
+.sign-in {
+  max-width: 32rem;
+  margin: 3rem auto;
+  padding-inline: 1rem;
+}

@@ -244,7 +244,9 @@ export class ViewerServer {
     } else if (path.startsWith('/api/')) {
       sendText(response, 404, 'Not Found');
     } else {
-      await this.#serveStatic(path, response);
+      await serveStatic(this.#options.staticRoot, path, response, {
+        assetsOnly: sessions !== undefined,
+      });
     }
   }
 
@@ -361,20 +363,24 @@ export class ViewerServer {
     // JSON.stringify never emits a raw newline, so the data fits on one `data:` line.
     client.write(`event: ${event}\ndata: ${data}\n\n`);
   }
+}
 
-  async #serveStatic(path: string, response: ServerResponse): Promise<void> {
-    const file = await resolveStaticFile(this.#options.staticRoot, path);
-    if (file === null) {
-      sendText(response, 404, 'Not Found');
-      return;
-    }
-    const body = await readFile(file);
-    send(response, 200, body, {
-      'Content-Type': CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      // Revalidate every time: the files change whenever the page is rebuilt.
-      'Cache-Control': 'no-cache',
-    });
+export async function serveStatic(
+  root: string,
+  path: string,
+  response: ServerResponse,
+  options: { cacheControl?: string; assetsOnly?: boolean } = {},
+): Promise<void> {
+  const file = await resolveStaticFile(root, path);
+  if (file === null || (options.assetsOnly && extname(file).toLowerCase() === '.html')) {
+    sendText(response, 404, 'Not Found');
+    return;
   }
+  const body = await readFile(file);
+  send(response, 200, body, {
+    'Content-Type': CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'Cache-Control': options.cacheControl ?? 'no-cache',
+  });
 }
 
 /** A `Host` value: a DNS name or IPv4 address, with an optional port. */
@@ -448,7 +454,7 @@ export async function resolveStaticFile(root: string, path: string): Promise<str
   }
 }
 
-function send(
+export function send(
   response: ServerResponse,
   status: number,
   body: string | Buffer,

@@ -23,6 +23,7 @@
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "snapshot": "node src/scripts/snapshot.ts",
     "start": "pnpm run build:web && node src/server/main.ts",
+    "start:hosted": "pnpm run build:web && node src/server/hosted.ts",
     "dev": "node src/scripts/dev.ts",
     "demo": "pnpm run build:web && node src/server/main.ts --demo"
   },

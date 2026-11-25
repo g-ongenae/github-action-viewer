@@ -230,6 +230,13 @@ At most 16 streams are open at once; more get `503`. Other methods than `GET` an
 `405` (other than `PUT` and `DELETE` on a maintained repository), unknown paths `404`, and the
 error bodies of these routes are a generic word or two.
 
+### Hosted GitHub sign-in
+
+Run `pnpm start:hosted` to require visitors to sign in with GitHub and collect
+with each visitor's GitHub App user access token. See the
+[hosted setup guide](docs/hosted-mode.md) for permissions, session behavior, and
+reverse-proxy configuration.
+
 ### Behind a reverse proxy
 
 To reach the viewer from other devices, put a reverse proxy in front of it and name the host the

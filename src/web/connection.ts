@@ -37,6 +37,8 @@ export interface ConnectionOptions {
   readonly onPayload: (payload: PagePayload) => void;
   readonly onHeartbeat: (heartbeat: Heartbeat) => void;
   readonly onStateChange: (state: ConnectionState) => void;
+  readonly onAuthRequired?: () => void;
+  readonly onError?: () => void;
   readonly createSource?: (url: string) => EventSourceLike;
 }
 
@@ -98,11 +100,17 @@ export class Connection {
     listen('heartbeat', (data) => {
       this.#options.onHeartbeat(data as Heartbeat);
     });
+    source.addEventListener('auth', () => {
+      if (source === this.#source) {
+        this.#options.onAuthRequired?.();
+      }
+    });
     source.addEventListener('error', () => {
       if (source !== this.#source) {
         return;
       }
       this.#markLost();
+      this.#options.onError?.();
       if (source.readyState === CLOSED) {
         this.#reopenLater();
       }

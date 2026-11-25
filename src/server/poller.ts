@@ -63,6 +63,8 @@ export interface PollerOptions {
   /** Called after each collection, and when the schedule changes. */
   readonly onUpdate: (state: PollState, outcome: PollOutcome | null) => void;
   readonly clock?: Clock;
+  /** Whether a previous snapshot may be served if its data could not be fetched again. */
+  readonly keepPreviousSnapshot?: boolean;
 }
 
 /**
@@ -230,7 +232,10 @@ export class Poller {
 
   #succeeded(result: CollectionResult, config: Config): { outcome: PollOutcome; delayMs: number } {
     const now = this.#clock.now();
-    this.#published = carryOver(this.#published, result);
+    this.#published = carryOver(
+      this.#options.keepPreviousSnapshot === false ? null : this.#published,
+      result,
+    );
     this.#lastCheckedAt = this.#lastSuccessAt = new Date(now).toISOString();
     this.#stale = null;
     this.#failures = 0;
@@ -269,6 +274,9 @@ export class Poller {
     const nowIso = new Date(now).toISOString();
     this.#lastCheckedAt = nowIso;
     this.#failures += 1;
+    if (this.#options.keepPreviousSnapshot === false) {
+      this.#published = null;
+    }
     const message = describeFailure(error);
     const base = config.pollIntervalSeconds * 1000;
 
