@@ -10,7 +10,7 @@ One section per repository, one line per branch or pull request: state, ref, dat
 and author. It updates by itself, and the tab title and icon say whether something is running or
 failed, so a pinned tab is enough.
 
-![The page in demo mode with status filters, a compact notice above the activity list, and workflow runs grouped by repository](docs/screenshot.png)
+![The viewer in demo mode with status filters, repository visibility toggles and run totals in the sidebar, and workflow activity grouped by repository](docs/screenshot.png)
 
 <sup>Demo mode (`pnpm demo`): every name on it is made up.</sup>
 
