@@ -67,8 +67,39 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.woff2': 'font/woff2',
 };
 
-export interface ViewerServerOptions {
+export interface ViewerContext {
   readonly source: PayloadSource;
+  readonly watchList?: WatchListEditor;
+  /** Aborted when the context can no longer serve data. */
+  readonly signal?: AbortSignal;
+  /** Called only for a stream that was accepted. Returns its close handler. */
+  readonly onStreamOpen?: () => () => void;
+}
+
+interface SessionRouting {
+  readonly publicOrigin: URL;
+  readonly resolve: (request: IncomingMessage) => ViewerContext | null;
+  /** Receives top-level cross-site navigations, including the GitHub callback. */
+  readonly handlePage: (
+    path: string,
+    request: IncomingMessage,
+    response: ServerResponse,
+  ) => Promise<boolean>;
+  readonly maxStreamsPerContext: number;
+}
+
+export type ViewerServerOptions = ViewerServerSettings &
+  (
+    | (ViewerContext & { readonly sessions?: never })
+    | {
+        readonly sessions: SessionRouting;
+        readonly source?: never;
+        readonly watchList?: never;
+        readonly allowedHosts?: never;
+      }
+  );
+
+interface ViewerServerSettings {
   /** Absolute path of the directory holding the page's static files. */
   readonly staticRoot: string;
   readonly log: Log;
@@ -80,11 +111,6 @@ export interface ViewerServerOptions {
    * `https://` origins are accepted too. Loopback names are always accepted.
    */
   readonly allowedHosts?: readonly string[];
-  /**
-   * Lets the page edit the list of maintained repositories; without it the server is read-only
-   * and the routes below do not exist.
-   */
-  readonly watchList?: WatchListEditor;
 }
 
 /**
@@ -94,7 +120,7 @@ export interface ViewerServerOptions {
  * cannot read it (see the README's security section). Opening the page itself from a link on
  * another site is a navigation, not a read, and is let through.
  *
- * With a {@link ViewerServerOptions.watchList}, it also answers `GET /api/repositories` and
+ * With a {@link ViewerContext.watchList}, it also answers `GET /api/repositories` and
  * `PUT` and `DELETE /api/maintained-repositories/{owner}/{name}`, the only routes that change
  * anything. They take no body, and need an `Origin` header naming this server: a browser sends it
  * with every `PUT` and `DELETE`, and no other site can forge it.
@@ -102,9 +128,8 @@ export interface ViewerServerOptions {
 export class ViewerServer {
   readonly #options: ViewerServerOptions;
   readonly #server: Server;
-  readonly #clients = new Set<ServerResponse>();
+  readonly #clients = new Map<ServerResponse, ViewerContext>();
   #heartbeat: ReturnType<typeof setInterval> | null = null;
-  #unsubscribe: (() => void) | null = null;
   #port = 0;
 
   constructor(options: ViewerServerOptions) {
@@ -136,11 +161,10 @@ export class ViewerServer {
       });
     });
     this.#port = (this.#server.address() as AddressInfo).port;
-    this.#unsubscribe = this.#options.source.subscribe((changed) => {
-      this.#broadcast(changed ? 'payload' : 'heartbeat');
-    });
     this.#heartbeat = setInterval(() => {
-      this.#broadcast('heartbeat');
+      for (const [client, context] of this.#clients) {
+        this.#send(client, context.source, 'heartbeat');
+      }
     }, this.#options.heartbeatMs ?? HEARTBEAT_MS);
     this.#heartbeat.unref();
     return this.#port;
@@ -148,14 +172,12 @@ export class ViewerServer {
 
   /** Ends the event streams, drops idle connections and stops listening. */
   async close(): Promise<void> {
-    this.#unsubscribe?.();
     if (this.#heartbeat !== null) {
       clearInterval(this.#heartbeat);
     }
-    for (const client of this.#clients) {
+    for (const client of this.#clients.keys()) {
       client.end();
     }
-    this.#clients.clear();
     const closed = new Promise<void>((resolve) =>
       this.#server.close(() => {
         resolve();
@@ -178,9 +200,27 @@ export class ViewerServer {
     // `//other-host/…` as an absolute URL.
     const path = (request.url ?? '').split('?', 1)[0] ?? '';
     const method = request.method ?? '';
-    const { watchList } = this.#options;
+    const sessions = this.#options.sessions;
+    if (
+      sessions &&
+      !path.startsWith('/api/') &&
+      (await sessions.handlePage(path, request, response))
+    ) {
+      return;
+    }
+    const context =
+      this.#options.sessions === undefined
+        ? this.#options
+        : path.startsWith('/api/')
+          ? this.#options.sessions.resolve(request)
+          : null;
+    if (path.startsWith('/api/') && (context === null || context.signal?.aborted)) {
+      sendText(response, 401, 'Sign in with GitHub');
+      return;
+    }
+    const watchList = context?.watchList;
     if (watchList !== undefined && path.startsWith(MAINTAINED_PREFIX)) {
-      await this.#editWatchList(watchList, method, path, request, response);
+      await this.#editWatchList(watchList, method, path, request, response, context?.signal);
       return;
     }
     if (method !== 'GET' && method !== 'HEAD') {
@@ -193,14 +233,14 @@ export class ViewerServer {
     }
 
     if (path === '/api/repositories' && watchList !== undefined) {
-      await answerJson(response, () => watchList.catalogue());
-    } else if (path === '/api/snapshot') {
-      send(response, 200, this.#options.source.payloadJson(), {
+      await answerJson(response, () => watchList.catalogue(), context?.signal);
+    } else if (path === '/api/snapshot' && context !== null) {
+      send(response, 200, context.source.payloadJson(), {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
       });
-    } else if (path === '/api/events') {
-      this.#openStream(request, response);
+    } else if (path === '/api/events' && context !== null) {
+      this.#openStream(request, response, context);
     } else if (path.startsWith('/api/')) {
       sendText(response, 404, 'Not Found');
     } else {
@@ -218,6 +258,7 @@ export class ViewerServer {
     path: string,
     request: IncomingMessage,
     response: ServerResponse,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (method !== 'PUT' && method !== 'DELETE') {
       sendText(response, 405, 'Method Not Allowed', { Allow: 'PUT, DELETE' });
@@ -232,8 +273,10 @@ export class ViewerServer {
     // No body is expected: whatever was sent is discarded unread.
     request.resume();
     const repository = path.slice(MAINTAINED_PREFIX.length);
-    await answerJson(response, () =>
-      method === 'PUT' ? watchList.add(repository) : watchList.remove(repository),
+    await answerJson(
+      response,
+      () => (method === 'PUT' ? watchList.add(repository) : watchList.remove(repository)),
+      signal,
     );
   }
 
@@ -242,11 +285,17 @@ export class ViewerServer {
    * 127.0.0.1 reaches this server with `Host: attacker.example:4680`, and is refused.
    */
   #isAllowedHost(host: string | undefined): boolean {
+    if (this.#options.sessions) {
+      return host?.toLowerCase() === this.#options.sessions.publicOrigin.host;
+    }
     return host !== undefined && this.#origins.has(`http://${host.toLowerCase()}`);
   }
 
   /** The origins (and, without the scheme, the `Host` values) under which the server is reached. */
   get #origins(): Set<string> {
+    if (this.#options.sessions) {
+      return new Set([this.#options.sessions.publicOrigin.origin]);
+    }
     const port = String(this.#port);
     const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
     for (const host of this.#options.allowedHosts ?? []) {
@@ -256,12 +305,17 @@ export class ViewerServer {
     return origins;
   }
 
-  #openStream(request: IncomingMessage, response: ServerResponse): void {
+  #openStream(request: IncomingMessage, response: ServerResponse, context: ViewerContext): void {
     const max = this.#options.maxEventClients ?? MAX_EVENT_CLIENTS;
-    if (this.#clients.size >= max) {
+    const perContext = this.#options.sessions?.maxStreamsPerContext ?? max;
+    const contextStreams = [...this.#clients.values()].filter(
+      (client) => client.source === context.source,
+    ).length;
+    if (this.#clients.size >= max || contextStreams >= perContext) {
       sendText(response, 503, 'Too many open streams', { 'Retry-After': '30' });
       return;
     }
+    const onStreamClose = request.method === 'HEAD' ? undefined : context.onStreamOpen?.();
     response.writeHead(200, {
       ...SECURITY_HEADERS,
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -276,25 +330,33 @@ export class ViewerServer {
     }
     request.socket.setTimeout(0);
     request.socket.setNoDelay(true);
-    this.#clients.add(response);
-    response.on('close', () => this.#clients.delete(response));
+    this.#clients.set(response, context);
+    const unsubscribe = context.source.subscribe((changed) => {
+      this.#send(response, context.source, changed ? 'payload' : 'heartbeat');
+    });
+    const cleanup = (): void => {
+      if (this.#clients.delete(response)) {
+        context.signal?.removeEventListener('abort', onAbort);
+        unsubscribe();
+        onStreamClose?.();
+      }
+    };
+    const onAbort = (): void => {
+      cleanup();
+      response.end('event: auth\ndata: {}\n\n');
+    };
+    context.signal?.addEventListener('abort', onAbort, { once: true });
+    response.on('close', cleanup);
     // Reconnection delay for EventSource, then the current payload.
     response.write('retry: 5000\n\n');
-    this.#send(response, 'payload');
+    this.#send(response, context.source, 'payload');
   }
 
-  #broadcast(event: EventName): void {
-    for (const client of this.#clients) {
-      this.#send(client, event);
-    }
-  }
-
-  #send(client: ServerResponse, event: EventName): void {
+  #send(client: ServerResponse, source: PayloadSource, event: EventName): void {
     if (client.writableLength > MAX_BUFFERED_BYTES) {
       client.destroy();
       return;
     }
-    const { source } = this.#options;
     const data = event === 'payload' ? source.payloadJson() : JSON.stringify(source.heartbeat());
     // JSON.stringify never emits a raw newline, so the data fits on one `data:` line.
     client.write(`event: ${event}\ndata: ${data}\n\n`);
@@ -408,17 +470,26 @@ function send(
 async function answerJson(
   response: ServerResponse,
   produce: () => Promise<unknown>,
+  signal?: AbortSignal,
 ): Promise<void> {
   let status = 200;
   let body: unknown;
   try {
     body = await produce();
   } catch (error) {
+    if (signal?.aborted) {
+      sendText(response, 401, 'Sign in with GitHub');
+      return;
+    }
     if (!(error instanceof WatchListError)) {
       throw error;
     }
     status = error.status;
     body = { error: error.message } satisfies ApiError;
+  }
+  if (signal?.aborted) {
+    sendText(response, 401, 'Sign in with GitHub');
+    return;
   }
   send(response, status, JSON.stringify(body), {
     'Content-Type': 'application/json; charset=utf-8',
@@ -427,7 +498,7 @@ async function answerJson(
 }
 
 /** A short, generic plain-text answer: errors never carry details. */
-function sendText(
+export function sendText(
   response: ServerResponse,
   status: number,
   text: string,

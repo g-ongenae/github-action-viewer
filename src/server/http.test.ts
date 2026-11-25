@@ -112,7 +112,7 @@ function send(
 }
 
 /** Opens the event stream; collects the events as they arrive. */
-async function openStream(): Promise<{
+async function openStream(headers: Record<string, string> = {}): Promise<{
   res: IncomingMessage;
   events: { event: string; data: string }[];
   close: () => void;
@@ -120,7 +120,7 @@ async function openStream(): Promise<{
   return new Promise((resolve, reject) => {
     const events: { event: string; data: string }[] = [];
     const req = httpRequest(
-      { host: '127.0.0.1', port, path: '/api/events', headers: { host: host() } },
+      { host: '127.0.0.1', port, path: '/api/events', headers: { host: host(), ...headers } },
       (res) => {
         let buffer = '';
         res.setEncoding('utf8');
@@ -559,5 +559,65 @@ describe('ViewerServer: editing the watch list', () => {
       expect(response.status).toBe(405);
       expect(response.headers.allow).toBe('GET, HEAD');
     }
+  });
+});
+
+describe('ViewerServer session routing', () => {
+  it('isolates snapshots and live updates, and disconnects a revoked session', async () => {
+    await server.close();
+    const aliceSource = new FakeSource();
+    const bobSource = new FakeSource();
+    aliceSource.json = '{"repo":"alice/private"}';
+    bobSource.json = '{"repo":"bob/private"}';
+    const aliceAbort = new AbortController();
+    const alice = { source: aliceSource, signal: aliceAbort.signal };
+    const bob = { source: bobSource };
+    const publicOrigin = new URL('https://viewer.example');
+    const headers = { host: publicOrigin.host };
+    const aliceHeaders = { ...headers, cookie: 'session=alice' };
+    const bobHeaders = { ...headers, cookie: 'session=bob' };
+    server = new ViewerServer({
+      staticRoot: root,
+      log: (line) => logs.push(line),
+      sessions: {
+        publicOrigin,
+        resolve: (request) => {
+          if (request.headers.cookie === 'session=alice') return { ...alice };
+          if (request.headers.cookie === 'session=bob') return bob;
+          return null;
+        },
+        handlePage: () => Promise.resolve(false),
+        maxStreamsPerContext: 1,
+      },
+    });
+    port = await server.listen(0);
+
+    expect((await send('/api/snapshot', { headers })).status).toBe(401);
+    expect((await send('/api/repositories', { headers })).status).toBe(401);
+    expect((await send('/api/events', { headers })).status).toBe(401);
+    expect((await send('/api/snapshot', { headers: aliceHeaders })).body).toBe(aliceSource.json);
+    expect((await send('/api/snapshot', { headers: bobHeaders })).body).toBe(bobSource.json);
+    const aliceStream = await openStream(aliceHeaders);
+    const bobStream = await openStream(bobHeaders);
+    expect((await send('/api/events', { headers: aliceHeaders })).status).toBe(503);
+    aliceSource.json = '{"repo":"alice/other"}';
+    aliceSource.emit(true);
+    await vi.waitFor(() => {
+      expect(aliceStream.events).toContainEqual({
+        event: 'payload',
+        data: aliceSource.json,
+      });
+    });
+    expect(bobStream.events).toEqual([{ event: 'payload', data: bobSource.json }]);
+
+    aliceAbort.abort();
+    await vi.waitFor(() => {
+      expect(aliceStream.res.complete).toBe(true);
+    });
+    expect(aliceStream.events.at(-1)?.event).toBe('auth');
+    expect(aliceSource.listeners.size).toBe(0);
+    expect((await send('/api/snapshot', { headers: aliceHeaders })).status).toBe(401);
+    expect(bobStream.res.complete).toBe(false);
+    bobStream.close();
   });
 });
