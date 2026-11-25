@@ -244,7 +244,9 @@ export class ViewerServer {
     } else if (path.startsWith('/api/')) {
       sendText(response, 404, 'Not Found');
     } else {
-      await serveStatic(this.#options.staticRoot, path, response);
+      await serveStatic(this.#options.staticRoot, path, response, {
+        assetsOnly: sessions !== undefined,
+      });
     }
   }
 
@@ -367,17 +369,17 @@ export async function serveStatic(
   root: string,
   path: string,
   response: ServerResponse,
-  cacheControl = 'no-cache',
+  options: { cacheControl?: string; assetsOnly?: boolean } = {},
 ): Promise<void> {
   const file = await resolveStaticFile(root, path);
-  if (file === null) {
+  if (file === null || (options.assetsOnly && extname(file).toLowerCase() === '.html')) {
     sendText(response, 404, 'Not Found');
     return;
   }
   const body = await readFile(file);
   send(response, 200, body, {
     'Content-Type': CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
-    'Cache-Control': cacheControl,
+    'Cache-Control': options.cacheControl ?? 'no-cache',
   });
 }
 

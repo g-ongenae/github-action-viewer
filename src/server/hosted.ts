@@ -261,12 +261,14 @@ export function createHostedServer(options: HostedOptions): {
           redirect(response, getSession(request) ? '/dashboard' : '/auth/sign-in');
         } else if (path === '/dashboard') {
           if (getSession(request)) {
-            await serveStatic(options.staticRoot, '/', response, 'no-store');
+            await serveStatic(options.staticRoot, '/', response, { cacheControl: 'no-store' });
           } else {
             redirect(response, '/auth/sign-in');
           }
         } else if (path === '/auth/sign-in') {
-          await serveStatic(options.staticRoot, '/sign-in.html', response, 'no-store');
+          await serveStatic(options.staticRoot, '/sign-in.html', response, {
+            cacheControl: 'no-store',
+          });
         } else if (path === '/auth/session') {
           const record = getSession(request);
           if (!record) {

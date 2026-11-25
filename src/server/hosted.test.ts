@@ -112,8 +112,8 @@ function cookie(header: string | undefined): string {
   return header.split(';')[0] ?? '';
 }
 
-async function login(user: string) {
-  const start = await read('/auth/login');
+async function login(user: string, existing?: { cookie: string }) {
+  const start = await read('/auth/login', existing);
   expect(start.status).toBe(303);
   const authorization = new URL(start.headers.location ?? '');
   const state = authorization.searchParams.get('state') ?? '';
@@ -121,7 +121,7 @@ async function login(user: string) {
   const pendingCookie = cookie(start.headers['set-cookie']?.[0]);
   expect((await read(path)).status).toBe(400);
   const result = await read(path, {
-    cookie: pendingCookie,
+    cookie: existing ? `${pendingCookie}; ${existing.cookie}` : pendingCookie,
     'Sec-Fetch-Site': 'cross-site',
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Dest': 'document',
@@ -142,11 +142,13 @@ async function login(user: string) {
 describe('hosted viewer', () => {
   it('exchanges the GitHub code and scopes requests and live data to the browser session', async () => {
     expect((await read('/')).headers.location).toBe('/auth/sign-in');
+    expect((await read('/%69ndex.html')).status).toBe(404);
     expect((await read('/api/snapshot')).status).toBe(401);
     expect((await read('/api/events')).status).toBe(401);
     expect((await read('/api/repositories')).status).toBe(401);
     const alice = await login('alice');
     const bob = await login('bob');
+    expect((await read('/%69ndex.html', alice)).status).toBe(404);
     const aliceView = await read('/auth/session', alice);
     expect(aliceView.body).toContain('https://github.com/apps/actions-viewer/installations/new');
     const view = (JSON.parse(aliceView.body) as { view: string }).view;
@@ -190,5 +192,18 @@ describe('hosted viewer', () => {
     });
     expect((await read('/api/snapshot', alice)).status).toBe(401);
     expect(bobStream.complete).toBe(false);
+  });
+  it('replaces the prior session when the same browser switches accounts', async () => {
+    const alice = await login('alice');
+    const aliceView = (JSON.parse((await read('/auth/session', alice)).body) as { view: string })
+      .view;
+    const bob = await login('bob', alice);
+    expect((await read('/auth/session', alice)).status).toBe(401);
+    expect((await read('/auth/session', bob)).status).toBe(200);
+    const stalePage = `view=${aliceView}`;
+    expect((await read(`/api/repositories?${stalePage}`, bob)).status).toBe(401);
+    const bobOrigin = { ...bob, Origin: origin.origin };
+    expect((await read(`/auth/logout?${stalePage}`, bobOrigin, 'POST')).status).toBe(401);
+    expect((await read('/auth/session', bob)).status).toBe(200);
   });
 });
