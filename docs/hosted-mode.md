@@ -16,8 +16,6 @@ work. Different sessions have separate snapshots, watch lists, caches and event 
    apply a shorter, permission-aware snapshot policy in hosted mode. Document setup
    and test with a simulated GitHub API.
 
-Each pull request gets an Opus 5.5 review.
-
 ## Deployment and acceptance
 
 Run a single Node service on loopback behind an HTTPS proxy that forwards server-sent

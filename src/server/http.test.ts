@@ -582,7 +582,7 @@ describe('ViewerServer session routing', () => {
       sessions: {
         publicOrigin,
         resolve: (request) => {
-          if (request.headers.cookie === 'session=alice') return alice;
+          if (request.headers.cookie === 'session=alice') return { ...alice };
           if (request.headers.cookie === 'session=bob') return bob;
           return null;
         },

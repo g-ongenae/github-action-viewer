@@ -79,6 +79,7 @@ export interface ViewerContext {
 interface SessionRouting {
   readonly publicOrigin: URL;
   readonly resolve: (request: IncomingMessage) => ViewerContext | null;
+  /** Receives top-level cross-site navigations, including the GitHub callback. */
   readonly handlePage: (
     path: string,
     request: IncomingMessage,
@@ -88,7 +89,15 @@ interface SessionRouting {
 }
 
 export type ViewerServerOptions = ViewerServerSettings &
-  (ViewerContext | { readonly sessions: SessionRouting });
+  (
+    | (ViewerContext & { readonly sessions?: never })
+    | {
+        readonly sessions: SessionRouting;
+        readonly source?: never;
+        readonly watchList?: never;
+        readonly allowedHosts?: never;
+      }
+  );
 
 interface ViewerServerSettings {
   /** Absolute path of the directory holding the page's static files. */
@@ -169,7 +178,6 @@ export class ViewerServer {
     for (const client of this.#clients.keys()) {
       client.end();
     }
-    this.#clients.clear();
     const closed = new Promise<void>((resolve) =>
       this.#server.close(() => {
         resolve();
@@ -192,7 +200,7 @@ export class ViewerServer {
     // `//other-host/…` as an absolute URL.
     const path = (request.url ?? '').split('?', 1)[0] ?? '';
     const method = request.method ?? '';
-    const sessions = 'sessions' in this.#options ? this.#options.sessions : undefined;
+    const sessions = this.#options.sessions;
     if (
       sessions &&
       !path.startsWith('/api/') &&
@@ -201,11 +209,11 @@ export class ViewerServer {
       return;
     }
     const context =
-      'sessions' in this.#options
-        ? path.startsWith('/api/')
+      this.#options.sessions === undefined
+        ? this.#options
+        : path.startsWith('/api/')
           ? this.#options.sessions.resolve(request)
-          : null
-        : this.#options;
+          : null;
     if (path.startsWith('/api/') && (context === null || context.signal?.aborted)) {
       sendText(response, 401, 'Sign in with GitHub');
       return;
@@ -277,7 +285,7 @@ export class ViewerServer {
    * 127.0.0.1 reaches this server with `Host: attacker.example:4680`, and is refused.
    */
   #isAllowedHost(host: string | undefined): boolean {
-    if ('sessions' in this.#options) {
+    if (this.#options.sessions) {
       return host?.toLowerCase() === this.#options.sessions.publicOrigin.host;
     }
     return host !== undefined && this.#origins.has(`http://${host.toLowerCase()}`);
@@ -285,7 +293,7 @@ export class ViewerServer {
 
   /** The origins (and, without the scheme, the `Host` values) under which the server is reached. */
   get #origins(): Set<string> {
-    if ('sessions' in this.#options) {
+    if (this.#options.sessions) {
       return new Set([this.#options.sessions.publicOrigin.origin]);
     }
     const port = String(this.#port);
@@ -299,15 +307,15 @@ export class ViewerServer {
 
   #openStream(request: IncomingMessage, response: ServerResponse, context: ViewerContext): void {
     const max = this.#options.maxEventClients ?? MAX_EVENT_CLIENTS;
-    const perContext =
-      'sessions' in this.#options ? this.#options.sessions.maxStreamsPerContext : max;
+    const perContext = this.#options.sessions?.maxStreamsPerContext ?? max;
     const contextStreams = [...this.#clients.values()].filter(
-      (client) => client === context,
+      (client) => client.source === context.source,
     ).length;
     if (this.#clients.size >= max || contextStreams >= perContext) {
       sendText(response, 503, 'Too many open streams', { 'Retry-After': '30' });
       return;
     }
+    const onStreamClose = request.method === 'HEAD' ? undefined : context.onStreamOpen?.();
     response.writeHead(200, {
       ...SECURITY_HEADERS,
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -323,24 +331,22 @@ export class ViewerServer {
     request.socket.setTimeout(0);
     request.socket.setNoDelay(true);
     this.#clients.set(response, context);
-    const onStreamClose = context.onStreamOpen?.();
     const unsubscribe = context.source.subscribe((changed) => {
       this.#send(response, context.source, changed ? 'payload' : 'heartbeat');
     });
+    const cleanup = (): void => {
+      if (this.#clients.delete(response)) {
+        context.signal?.removeEventListener('abort', onAbort);
+        unsubscribe();
+        onStreamClose?.();
+      }
+    };
     const onAbort = (): void => {
-      this.#clients.delete(response);
-      unsubscribe();
+      cleanup();
       response.end('event: auth\ndata: {}\n\n');
     };
     context.signal?.addEventListener('abort', onAbort, { once: true });
-    response.on('close', () => {
-      this.#clients.delete(response);
-      context.signal?.removeEventListener('abort', onAbort);
-      if (!context.signal?.aborted) {
-        unsubscribe();
-      }
-      onStreamClose?.();
-    });
+    response.on('close', cleanup);
     // Reconnection delay for EventSource, then the current payload.
     response.write('retry: 5000\n\n');
     this.#send(response, context.source, 'payload');
